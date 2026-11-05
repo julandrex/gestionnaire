@@ -23190,7 +23190,15 @@ async function authApplyAccess(afterLogin){
   else if(r.status==='mfa_enroll') showMfaGate('enroll',{email:r.email,canSkip:r.canSkip});
   else if(r.status==='mustchange') showForcedPasswordChange();
   else if(r.status==='nosession') showAuthGate('login');
-  else if(r.status==='revoked') showAuthGate('revoked',{email:r.email});
+  else if(r.status==='revoked'){
+    // [2026-11-05] Compte inscrit dans UN seul autre hôpital (référent d'un client) : on l'ouvre directement au lieu
+    // d'afficher « Accès non autorisé » pour l'hôpital par défaut. Aucun droit en plus : le serveur revérifie tout.
+    let hs=[], choisi=null;
+    try{ hs=await _jlxLoadMyHospitals(); }catch(e){}
+    try{ choisi=sessionStorage.getItem('jlx_admin_hosp'); }catch(e){}
+    if(hs.length===1 && hs[0].id!==currentHospitalId && !choisi){ _jlxSwitchHospital(hs[0].id); return r; }
+    showAuthGate('revoked',{email:r.email});
+  }
   else console.warn('[auth] vérification des droits impossible ('+r.message+') — écran non verrouillé, le serveur reste seul juge');
   return r;
 }
