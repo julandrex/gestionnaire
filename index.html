@@ -28445,7 +28445,7 @@ function renderClients(){
       if(c.bon_commande) ctl+='Bon de commande '+_clEsc(c.bon_commande);
       var act='';
       if(c.ref && (c.etape_accueil==='signe'||c.etape_accueil==='valide')) act='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\')">Valider et envoyer l\'accès</button>';
-      else if(c.etape_accueil==='acces_envoye') act='<button class="tb-ghost tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\')">Renvoyer l\'accès</button>';
+      else if(c.etape_accueil==='acces_envoye') act='<button class="tb-ghost tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\',true)">Renvoyer l\'accès</button>';
       var hop=c.hospital_id?_clEsc(c.hopital)+'<br><span style="color:var(--t3,#7f8ea3);">'+_clEsc(c.hospital_id)+' · '+(c.statut_hopital==='active'?'ouvert':'fermé')+'</span>':_clEsc(c.hopital)+'<br><span style="color:#e0a43b;">hôpital pas encore créé</span>';
       h+='<tr style="vertical-align:top;">'+[hop,refs,cmd,conv,sig,ctl,act].map(function(x){ return '<td style="padding:8px;border-bottom:1px solid var(--line2,#2a3b55);">'+x+'</td>'; }).join('')+'</tr>';
     });
@@ -28453,15 +28453,16 @@ function renderClients(){
   }
   root.innerHTML=h;
 }
-async function clientsValider(ref){
-  if(!confirm('Valider la convention de la commande '+ref+' et envoyer au référent son lien d\'accès à l\'outil gestionnaire ?\n\nAvant de valider : fiche BCE, fonction et qualité du signataire, e-mail de l\'organisation, bon de commande.')) return;
+async function clientsValider(ref,renvoi){
+  if(!confirm(renvoi?'Renvoyer un nouveau lien d\'accès au référent de la commande '+ref+' ?\n\nL\'ancien lien reste utilisable s\'il n\'a pas encore servi.'
+    :'Valider la convention de la commande '+ref+' et envoyer au référent son lien d\'accès à l\'outil gestionnaire ?\n\nAvant de valider : fiche BCE, fonction et qualité du signataire, e-mail de l\'organisation, bon de commande.')) return;
   try{
     var sb=await getSbClient(); var s=await sb.auth.getSession(); var tok=s&&s.data&&s.data.session&&s.data.session.access_token;
     if(!tok) throw new Error('Session expirée : reconnectez-vous.');
     var res=await fetch('https://zzqbcjtrtisexyokezaq.supabase.co/functions/v1/commandes?action=acces',{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify({ref:ref})});
     var j={}; try{ j=await res.json(); }catch(_){}
     if(!res.ok) throw new Error(j.error||('code '+res.status));
-    alert(j.acces?'✔ Validé : le lien d\'accès est parti au référent.':'✔ Validé. '+(j.message||''));
+    alert(j.acces?(renvoi?'✔ Nouveau lien d\'accès envoyé au référent.':'✔ Validé : le lien d\'accès est parti au référent.'):'✔ Validé. '+(j.message||''));
   }catch(e){ alert('⚠️ '+((e&&e.message)||e)); }
   openClients();
 }
