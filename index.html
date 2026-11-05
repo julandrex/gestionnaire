@@ -23639,6 +23639,29 @@ async function loadExchanges(){
   }
 }
 
+// [2026-11-05] Demandes groupées par jour et par poste concerné (la demande d'origine, ses propositions, les reprises du même poste).
+// Une contre-proposition rattachée (échange croisé) porte sur le poste de la demande d'origine : counter_date / counter_post.
+function _exchKey(r){
+  var lnk=r.linked_exchange_id&&r.type==='swap';
+  return (lnk?r.counter_date:r.proposer_date)+'|'+(lnk?r.counter_post:r.proposer_post);
+}
+function _exchGroupsHtml(list, card){
+  var groups={}, order=[];
+  list.forEach(function(r){ var k=_exchKey(r); if(!groups[k]){ groups[k]=[]; order.push(k); } groups[k].push(r); });
+  order.sort(function(a,b){ return a<b?-1:a>b?1:0; });
+  return order.map(function(k){
+    var g=groups[k].slice().sort(function(a,b){
+      var pa=a.type==='exchange'&&!a.linked_exchange_id?0:1, pb=b.type==='exchange'&&!b.linked_exchange_id?0:1;
+      return pa-pb||String(a.created_at).localeCompare(String(b.created_at));
+    });
+    if(g.length===1) return card(g[0]);
+    var dk=k.split('|')[0], pid=k.split('|')[1];
+    return '<div style="border-left:3px solid var(--accent);padding-left:10px;margin:0 0 16px;">'
+      +'<div style="font-size:12px;font-weight:700;color:var(--t1);margin:0 0 8px;">📅 '+(dk?formatDate(dk):'?')+' — '+repEsc(_exPn(pid))
+      +' <span style="font-weight:500;color:var(--t3);">· '+g.length+' demandes pour ce poste</span></div>'
+      +g.map(card).join('')+'</div>';
+  }).join('');
+}
 function renderExchanges(){
   const container = document.getElementById('exch-mgr-content');
   if(!container) return;
@@ -23669,7 +23692,7 @@ function renderExchanges(){
   let html = topBar;
   if(open.length){
     html += '<div style="font-size:11px;font-weight:700;color:var(--t3);text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">En cours</div>';
-    html += open.map(r => renderExchCard(r, TYPE_LBL, STATUS_LBL, STATUS_COL)).join('');
+    html += _exchGroupsHtml(open, function(r){ return renderExchCard(r, TYPE_LBL, STATUS_LBL, STATUS_COL); }); // [2026-11-05] groupées par jour et poste
   } else {
     html += '<div style="color:var(--t3);font-size:12px;font-style:italic;margin-bottom:16px;">Aucune demande en cours.</div>';
   }
