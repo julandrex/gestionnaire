@@ -23645,6 +23645,7 @@ function _exchKey(r){
   var lnk=r.linked_exchange_id&&r.type==='swap';
   return (lnk?r.counter_date:r.proposer_date)+'|'+(lnk?r.counter_post:r.proposer_post);
 }
+var _exchGrpOpen={};
 function _exchGroupsHtml(list, card){
   var groups={}, order=[];
   list.forEach(function(r){ var k=_exchKey(r); if(!groups[k]){ groups[k]=[]; order.push(k); } groups[k].push(r); });
@@ -23656,10 +23657,16 @@ function _exchGroupsHtml(list, card){
     });
     if(g.length===1) return card(g[0]);
     var dk=k.split('|')[0], pid=k.split('|')[1];
-    return '<div style="border-left:3px solid var(--accent);padding-left:10px;margin:0 0 16px;">'
-      +'<div style="font-size:12px;font-weight:700;color:var(--t1);margin:0 0 8px;">📅 '+(dk?formatDate(dk):'?')+' — '+repEsc(_exPn(pid))
-      +' <span style="font-weight:500;color:var(--t3);">· '+g.length+' demandes pour ce poste</span></div>'
-      +g.map(card).join('')+'</div>';
+    // [2026-11-05] déroulant : fermé par défaut, ouvert d'office s'il y a une proposition à valider ; l'état ouvert/fermé est retenu
+    var nVal=g.filter(function(r){ return r.status==='accepted'||r.status==='pending_j1'||r.status==='pending_switch'; }).length;
+    var nAtt=g.filter(function(r){ return r.status==='open'; }).length;
+    var on=(k in _exchGrpOpen)?_exchGrpOpen[k]:nVal>0;
+    return '<details data-grp="'+repEsc(k)+'"'+(on?' open':'')+' ontoggle="_exchGrpOpen[this.dataset.grp]=this.open" style="border:1px solid var(--line2);border-left:3px solid var(--accent);border-radius:10px;margin:0 0 12px;background:var(--bg2);">'
+      +'<summary style="cursor:pointer;padding:10px 12px;font-size:13px;font-weight:700;color:var(--t1);list-style-position:inside;">📅 '+(dk?formatDate(dk):'?')+' — '+repEsc(_exPn(pid))
+      +' <span style="font-weight:500;color:var(--t3);">· '+g.length+' demandes</span>'
+      +(nVal?' <span style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">'+nVal+' à valider</span>':'')
+      +(nAtt?' <span style="background:var(--bg3);color:var(--t2);border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">'+nAtt+' en attente</span>':'')
+      +'</summary><div style="padding:0 10px 4px;">'+g.map(card).join('')+'</div></details>';
   }).join('');
 }
 function renderExchanges(){
