@@ -23027,6 +23027,17 @@ async function getSbClient(){
     _sbClientPromise=import('https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.117.3/+esm')
       .then(function(mod){
         _sbClient=mod.createClient(cfg.url, cfg.key, {auth:{persistSession:true, autoRefreshToken:true, detectSessionInUrl:false}});
+        // [2026-11-05] Lien « choisir mon mot de passe » (e-mail d'accès ou mot de passe oublié) : seul ce cas est lu dans
+        // l'adresse ; la session est ouverte, l'adresse nettoyée, puis l'écran « choisissez votre mot de passe » s'impose.
+        try{
+          const hp=new URLSearchParams(String(location.hash||'').replace(/^#/,''));
+          if(hp.get('access_token')&&hp.get('refresh_token')&&/^(recovery|invite|magiclink)$/.test(hp.get('type')||'')){
+            window._jlxLienMotDePasse=true;
+            history.replaceState(null,'',location.pathname+location.search);
+            return _sbClient.auth.setSession({access_token:hp.get('access_token'),refresh_token:hp.get('refresh_token')})
+              .then(function(r){ if(r&&r.error){ console.warn('[lien]',r.error.message); window._jlxLienMotDePasse=false; } return _sbClient; });
+          }
+        }catch(e){ console.warn('[lien]',e); }
         return _sbClient;
       })
       .catch(function(){ _sbClientPromise=null; return null; });
@@ -23055,6 +23066,7 @@ async function authCheckAccess(){
   catch(e){ return {status:'unknown',message:e.message}; }
   if(!session) return {status:'nosession'};
   const email=session.user&&session.user.email;
+  if(window._jlxLienMotDePasse) return {status:'mustchange',email:email}; // [2026-11-05] arrivée par le lien : mot de passe d'abord, puis la double authentification
   // [2026-10-13] MFA_GESTIONNAIRE : double authentification (TOTP). Une erreur réseau ne verrouille pas l'écran.
   try{
     const _aal=await sb.auth.mfa.getAuthenticatorAssuranceLevel();
@@ -23412,6 +23424,7 @@ async function authSubmitForcedChange(ev){
     const sb=await getSbClient();
     const {error}=await sb.auth.updateUser({password:p1,data:{must_change_password:false}});
     if(error) throw error;
+    window._jlxLienMotDePasse=false; // [2026-11-05]
     showToast('✅ Mot de passe enregistré');
     await authApplyAccess(true);
   }catch(e){ err.textContent=e.message||String(e); btn.disabled=false; }
