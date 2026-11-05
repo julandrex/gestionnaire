@@ -28443,6 +28443,8 @@ async function openClients(){
   try{
     var sb=await getSbClient(); var r=await sb.rpc('admin_clients'); if(r.error) throw r.error;
     _cl.rows=r.data||[];
+    // [2026-11-05] Factures et notes de crédit (admin_factures_liste) ; sans la migration du 05/11 (b), la liste reste vide.
+    var rf=await sb.rpc('admin_factures_liste'); _cl.factures=rf.error?[]:(rf.data||[]); _cl.errFact=rf.error?rf.error.message:'';
   }catch(e){ _cl.err=(e&&e.message)||String(e); }
   _cl.busy=false; renderClients();
 }
@@ -28470,12 +28472,78 @@ function renderClients(){
       var act='';
       if(c.ref && (c.etape_accueil==='signe'||c.etape_accueil==='valide')) act='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\')">Valider et envoyer l\'accès</button>';
       else if(c.etape_accueil==='acces_envoye') act='<button class="tb-ghost tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\',true)">Renvoyer l\'accès</button>';
+      // Commande sur facture : la facture n'est jamais émise automatiquement (pas de relais de spam), c'est ce bouton.
+      if(c.ref && c.mode==='facture' && c.commande_statut==='recue' && !(_cl.factures||[]).some(function(f){ return f.ref===c.ref && f.type==='facture' && !f.note_credit_numero; }))
+        act+=(act?'<br>':'')+'<button class="tb-btn" style="margin-top:4px;padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsFacturer(\''+_clEsc(c.ref)+'\')">Émettre la facture</button>';
       var hop=c.hospital_id?_clEsc(c.hopital)+'<br><span style="color:var(--t3,#7f8ea3);">'+_clEsc(c.hospital_id)+' · '+(c.statut_hopital==='active'?'ouvert':'fermé')+'</span>':_clEsc(c.hopital)+'<br><span style="color:#e0a43b;">hôpital pas encore créé</span>';
       h+='<tr style="vertical-align:top;">'+[hop,refs,cmd,conv,sig,ctl,act].map(function(x){ return '<td style="padding:8px;border-bottom:1px solid var(--line2,#2a3b55);">'+x+'</td>'; }).join('')+'</tr>';
     });
     h+='</tbody></table></div>';
   }
+  if(!_cl.busy && !_cl.err) h+=_clFacturesHtml();
   root.innerHTML=h;
+}
+// [2026-11-05] Factures et notes de crédit : paiement reçu (virement) et annulation par note de crédit.
+var CL_ENVOI = { peppol: ['Peppol', '#3fae6a'], email: ['E-mail', '#4aa3df'], echec: ['Échec d\'envoi', '#e5735c'], a_envoyer: ['À envoyer', '#e0a43b'] };
+function _clFacturesHtml(){
+  var L=_cl.factures||[];
+  var h='<div style="margin:26px 0 10px;font-weight:700;font-size:14px;">Factures et notes de crédit</div>';
+  if(_cl.errFact) return h+'<div style="color:var(--t2);font-size:13px;">Liste indisponible : '+_clEsc(_cl.errFact)+'</div>';
+  if(!L.length) return h+'<div style="color:var(--t2);font-size:13px;">Aucune facture.</div>';
+  var auj=new Date().toISOString().slice(0,10);
+  h+='<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12.5px;"><thead><tr style="text-align:left;color:var(--t2);">'
+    +['Numéro','Client','Montant HTVA','Paiement','Envoi',''].map(function(t){ return '<th style="padding:6px 8px;border-bottom:1px solid var(--line2,#2a3b55);">'+t+'</th>'; }).join('')+'</tr></thead><tbody>';
+  L.forEach(function(f){
+    var nc=f.type==='note_credit', d=f.destinataire||{};
+    var num='<b>'+_clEsc(f.numero)+'</b>'+(f.essai?' <span style="color:#e0a43b;">essai</span>':'')+'<br><span style="color:var(--t2);">'+(nc?'note de crédit':'facture')+' du '+_clDate(f.emise_le)+'</span>'
+      +(nc&&f.facture_origine_numero?'<br><span style="color:var(--t3,#7f8ea3);">annule '+_clEsc(f.facture_origine_numero)+(f.motif?' : '+_clEsc(f.motif):'')+'</span>':'')
+      +(!nc&&f.note_credit_numero?'<br><span style="color:#e5735c;">annulée par '+_clEsc(f.note_credit_numero)+'</span>':'');
+    var cli=_clEsc(d.nom||'')+'<br><span style="color:var(--t3,#7f8ea3);">'+_clEsc(f.ref||'')+(f.peppol_adresse?' · '+_clEsc(f.peppol_adresse):' · pas sur Peppol')+'</span>';
+    var mt=(nc?'− ':'')+(f.montant_ht_cents/100).toLocaleString('fr-BE',{minimumFractionDigits:2})+' €';
+    var pay='';
+    if(nc) pay='<span style="color:var(--t3,#7f8ea3);">—</span>';
+    else if(f.payee) pay='<span style="color:#3fae6a;">✓ payée'+(f.payee_le?' le '+_clDate(f.payee_le):'')+'</span>'+(f.stripe_invoice_id?'<br><span style="color:var(--t3,#7f8ea3);">Stripe</span>':'');
+    else if(f.note_credit_numero) pay='<span style="color:var(--t3,#7f8ea3);">annulée</span>';
+    else pay='<span style="color:'+(f.echeance&&f.echeance<auj?'#e5735c':'#e0a43b')+';">'+(f.echeance&&f.echeance<auj?'⚠️ en retard':'à payer')+(f.echeance?' (échéance '+_clDate(f.echeance)+')':'')+'</span>'
+      +(f.communication?'<br><span style="color:var(--t2);font-family:monospace;">'+_clEsc(f.communication)+'</span>':'');
+    var en=CL_ENVOI[f.envoi]||[f.envoi||'—','#7f8ea3'];
+    var env='<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:'+en[1]+'22;color:'+en[1]+';font-weight:600;">'+en[0]+'</span>';
+    var act='';
+    if(!nc && !f.note_credit_numero){
+      if(!f.payee) act+='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsPaiementRecu(\''+_clEsc(f.numero)+'\')">Paiement reçu</button><br>';
+      act+='<button class="tb-ghost tb-btn" style="margin-top:4px;padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsNoteCredit(\''+_clEsc(f.numero)+'\','+(f.payee&&f.stripe_invoice_id?'true':'false')+')">Note de crédit</button>';
+    }
+    h+='<tr style="vertical-align:top;">'+[num,cli,mt,pay,env,act].map(function(x){ return '<td style="padding:8px;border-bottom:1px solid var(--line2,#2a3b55);">'+x+'</td>'; }).join('')+'</tr>';
+  });
+  return h+'</tbody></table></div>';
+}
+async function _clAppel(action, corps){
+  var sb=await getSbClient(); var s=await sb.auth.getSession(); var tok=s&&s.data&&s.data.session&&s.data.session.access_token;
+  if(!tok) throw new Error('Session expirée : reconnectez-vous.');
+  var res=await fetch('https://zzqbcjtrtisexyokezaq.supabase.co/functions/v1/commandes?action='+action,{method:'POST',headers:{'Content-Type':'application/json','Authorization':'Bearer '+tok},body:JSON.stringify(corps)});
+  var j={}; try{ j=await res.json(); }catch(_){}
+  if(!res.ok) throw new Error((j.error||('code '+res.status))+(j.erreurs?'\n\n'+JSON.stringify(j.erreurs).slice(0,600):''));
+  return j;
+}
+async function clientsFacturer(ref){
+  if(!confirm('Émettre et envoyer la facture de la commande '+ref+' ?\n\nVirement à 30 jours, avec communication structurée. Elle part par Peppol si l\'hôpital y est inscrit, sinon par e-mail. Une facture émise ne se supprime pas : une erreur se corrige par une note de crédit.')) return;
+  try{ var j=await _clAppel('facturer',{ref:ref}); alert('✔ Facture '+j.numero+' envoyée ('+(j.canal==='email'?'par e-mail':'par Peppol')+').\nÉchéance : '+_clDate(j.echeance)+'\nCommunication : '+j.communication); }
+  catch(e){ alert('⚠️ '+((e&&e.message)||e)); }
+  openClients();
+}
+async function clientsPaiementRecu(numero){
+  if(!confirm('Le virement de la facture '+numero+' est-il bien arrivé sur le compte ?\n\nSi c\'est la première facture d\'une commande, l\'hôpital est créé (fermé) et le référent reçoit son lien pour signer la convention et le DPA.')) return;
+  try{ var j=await _clAppel('paiement_recu',{numero:numero}); alert(j.deja?'Cette facture était déjà marquée payée.':'✔ Paiement enregistré.'+(j.hopital?'\nHôpital '+j.hopital+' créé, lien de signature envoyé au référent.':'')); }
+  catch(e){ alert('⚠️ '+((e&&e.message)||e)); }
+  openClients();
+}
+async function clientsNoteCredit(numero, stripe){
+  var motif=prompt('Note de crédit : elle annule TOUTE la facture '+numero+' et part au client par Peppol ou par e-mail.'+(stripe?'\n\nFacture payée par Stripe : le remboursement éventuel se fait ensuite dans Stripe.':'')+'\n\nMotif (visible par le client) :','');
+  if(motif===null) return;
+  if(!motif.trim()){ alert('Indiquez un motif.'); return; }
+  try{ var j=await _clAppel('note_credit',{numero:numero,motif:motif.trim()}); alert(j.deja?'Une note de crédit existait déjà : '+j.numero:'✔ Note de crédit '+j.numero+' envoyée.'+(j.rembourser_dans_stripe?'\nPensez au remboursement dans Stripe.':'')); }
+  catch(e){ alert('⚠️ '+((e&&e.message)||e)); }
+  openClients();
 }
 async function clientsValider(ref,renvoi){
   if(!confirm(renvoi?'Renvoyer un nouveau lien d\'accès au référent de la commande '+ref+' ?\n\nL\'ancien lien reste utilisable s\'il n\'a pas encore servi.'
