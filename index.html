@@ -23651,7 +23651,7 @@ function renderExchanges(){
     return;
   }
 
-  const open = _exchData.filter(r=>r.status!=='confirmed'&&r.status!=='archived');
+  const open = _exchData.filter(r=>r.status!=='confirmed'&&r.status!=='archived'&&r.status!=='held'); // [2026-11-05] PROPOSITIONS : demande « en validation » = la proposition choisie est la carte à traiter
   const done = _exchData.filter(r=>r.status==='confirmed');
 
   var STATUS_LBL2=Object.assign({},STATUS_LBL,{archived:'📦 Archivé'});
