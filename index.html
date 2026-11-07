@@ -5504,7 +5504,7 @@ async function ppRefuseDesid(id,dk){
 function gotoView(id,el){
   // Logs protégé par le même PIN que l'Admin
   if(id === 'regles' && window._adminUnlocked && !(typeof _authMember!=='undefined'&&_authMember&&_authMember.role==='owner')) return; // [2026-11-04] Règles système : propriétaire seulement
-  if((id === 'logs' || id === 'monito' || id === 'factu' || id === 'regles') && !window._adminUnlocked){ // [2026-11-04] Règles système : après le code Admin // [2026-10-06] Monito : même code que Logs ; [2026-11-02] Facturation aussi
+  if((id === 'logs' || id === 'monito' || id === 'factu' || id === 'regles' || id === 'clients') && !window._adminUnlocked){ // [2026-11-04] Règles système : après le code Admin // [2026-10-06] Monito : même code que Logs ; [2026-11-02] Facturation aussi
     window._pendingView = {id, el};
     openAdminPanel();
     return;
@@ -8187,6 +8187,7 @@ async function checkAdminPin(){
     document.getElementById('sb-admin').style.display = '';
     document.getElementById('sb-logs').style.display = '';
     document.getElementById('sb-regles').style.display = document.getElementById('sb-monito').style.display; // [2026-11-04] Règles système : code Admin + propriétaire, comme Monito
+    try{ _clVisibilite(); }catch(e){} // [2026-11-07] Clients : affiché après le code Admin (si administrateur de la plateforme)
     // [2026-10-11] Monito réservé au propriétaire (le serveur refuse de toute façon les autres gestionnaires)
     document.getElementById('sb-monito').style.display = (typeof _authMember!=='undefined'&&_authMember&&_authMember.role==='owner') ? '' : 'none';
     document.getElementById('sb-factu').style.display = document.getElementById('sb-monito').style.display; // [2026-11-02] Facturation : comme Monito
@@ -8221,6 +8222,7 @@ function adminLock(){
   document.getElementById('sb-monito').style.display = 'none';
   document.getElementById('sb-factu').style.display = 'none';
   document.getElementById('sb-regles').style.display = 'none';
+  var _sbc=document.getElementById('sb-clients'); if(_sbc) _sbc.style.display = 'none'; // [2026-11-07]
 }
 
 async function changeAdminPin(){
@@ -28468,7 +28470,8 @@ async function _clVisibilite(essai){
     var sb=await getSbClient(); if(!sb) return;
     var s=await sb.auth.getSession(); if(!(s&&s.data&&s.data.session)){ if((essai||0)<20) setTimeout(function(){ _clVisibilite((essai||0)+1); }, 6000); return; }
     var r=await sb.rpc('admin_est_admin_plateforme'); var el=document.getElementById('sb-clients');
-    if(el) el.style.display = (r && r.data===true) ? '' : 'none';
+    window._clPlateforme = (r && r.data===true);
+    if(el) el.style.display = (window._clPlateforme && window._adminUnlocked) ? '' : 'none'; // [2026-11-07] Clients : seulement après le code Admin
     if(!(r && r.data===true) && (essai||0)<20) setTimeout(function(){ _clVisibilite((essai||0)+1); }, 15000); // MFA validée plus tard
   }catch(e){ console.warn('[clients]', e); }
 }
