@@ -24118,9 +24118,10 @@ function renderExchCard(r, TYPE_LBL, STATUS_LBL, STATUS_COL){
           +'<span style="color:var(--t2);">'+escHtml(e.detail)+'</span>' // [2026-10-28 XSS échange]
           +'</div>';
       }).join('');
-      return '<div style="margin-top:10px;background:rgba(245,158,11,.06);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;padding:8px 12px;">'
-        +'<div style="font-weight:700;color:var(--warn);font-size:10px;text-transform:uppercase;letter-spacing:.4px;margin-bottom:4px;">Historique des refus</div>'
-        +rows+'</div>';
+      // [2026-11-07] déroulant fermé : seul le nombre de refus est visible
+      return '<details style="margin-top:10px;background:rgba(245,158,11,.06);border-left:3px solid var(--warn);border-radius:0 6px 6px 0;padding:8px 12px;">'
+        +'<summary style="cursor:pointer;font-weight:700;color:var(--warn);font-size:10px;text-transform:uppercase;letter-spacing:.4px;">Historique des refus ('+log.length+')</summary>'
+        +'<div style="margin-top:4px;">'+rows+'</div></details>';
     }())
     +(actions?'<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:6px;">'+actions+'</div>':'')
     +'</div>';
