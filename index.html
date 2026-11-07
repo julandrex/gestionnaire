@@ -2996,11 +2996,6 @@ function showToast(msg, duration=2500){
   t._timer=setTimeout(()=>{t.style.opacity='0';t.style.transform='translateX(-50%) translateY(20px)';},duration);
 }
 
-function manualSaveProfiles(){
-  saveProfiles();
-  showToast('✅ Profils enregistrés avec succès');
-}
-
 function savePosts(){
   try{
     lsSet('planningURG_posts',JSON.stringify(posts));
@@ -3930,11 +3925,6 @@ async function resetPlanning(){
   render();
   showToast(_verrous ? '🔒 Planning réinitialisé — '+_verrous+' poste(s) verrouillé(s) conservé(s).'
                      : 'Planning réinitialisé.');
-}
-
-function resetProfiles(){
-  try{localStorage.removeItem(hospitalKey('planningURG_docs'));localStorage.removeItem(hospitalKey('planningURG_roles'));localStorage.removeItem(hospitalKey('planningURG_rolePostsMap'));localStorage.removeItem(hospitalKey('planningURG_shifts'));localStorage.removeItem(hospitalKey('planningURG_posts'));}catch(e){}
-  location.reload();
 }
 
 /* ── Garde quota per doctor per month ── */
@@ -26190,58 +26180,6 @@ async function validateDesiderata(id,forceStatus){
 }
 
 
-function exportAllData(){
-  const keys=['planningURG_docs','planningURG_roles','planningURG_rolePostsMap',
-              'planningURG_shifts','planningURG_posts','planningURG_exceptional',
-              'planningURG_favExceptional','planningURG_indispos',
-              'planningURG_progressTargets','planningURG_hourlyRates',
-              'planningURG_docGroups','planningURG_deletedDocIds'];
-  const data={_version:1,_date:new Date().toISOString(),_app:'Julandrex'};
-  keys.forEach(k=>{
-    const v=localStorage.getItem(k);
-    if(v) data[k]=JSON.parse(v);
-  });
-  const blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;
-  a.download=`julandrex-donnees-${new Date().toISOString().slice(0,10)}.json`;
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url),2000);
-}
-
-function importAllData(event){
-  const file=event.target.files[0];
-  if(!file) return;
-  const reader=new FileReader();
-  reader.onload=e=>{
-    try{
-      const data=JSON.parse(e.target.result);
-      if(!data._app||data._app!=='Julandrex'){
-        if(!confirm('Ce fichier ne semble pas être un export Julandrex. Continuer quand même ?')) return;
-      }
-      const keys=['planningURG_docs','planningURG_roles','planningURG_rolePostsMap',
-                  'planningURG_shifts','planningURG_posts','planningURG_exceptional',
-                  'planningURG_favExceptional','planningURG_indispos',
-                  'planningURG_progressTargets','planningURG_hourlyRates',
-                  'planningURG_docGroups','planningURG_deletedDocIds'];
-      let imported=0;
-      keys.forEach(k=>{
-        if(data[k]!==undefined){
-          localStorage.setItem(k,JSON.stringify(data[k]));
-          imported++;
-        }
-      });
-      alert(`✅ Import réussi — ${imported} section(s) importée(s).\nL'application va se recharger.`);
-      location.reload();
-    } catch(err){
-      alert('❌ Erreur lors de l\'import : '+err.message);
-    }
-  };
-  reader.readAsText(file);
-  event.target.value='';
-}
-
 function openSimCongeModal(){
   const ySel=document.getElementById('sim-year');
   ySel.innerHTML='';
@@ -26621,81 +26559,6 @@ function toggleAllExpDocs(checked){
   });
 }
 
-
-function shareplanning(){
-  const y=cy, m=cm;
-  const d2=dim(y,m);
-  const monthLabel=`${MONTHS[m]} ${y}`;
-  const days=[];
-  for(let d=1;d<=d2;d++){
-    const dk=dkey(y,m,d);
-    const dow=new Date(dk+'T12:00:00').getDay();
-    days.push({d,dk,dow,we:isWE(dk),label:['Di','Lu','Ma','Me','Je','Ve','Sa'][dow]});
-  }
-  const sections=[
-    {label:'Journée semaine', color:'#60a5fa', pids:posts.filter(p=>p.section==='jour'&&days.some(({dk})=>postActiveOnDay(p,dk))).map(p=>p.id)},
-    {label:'Soirée',          color:'#e879f9', pids:['pm14','pm16'].filter(pid=>{const p=getPost(pid);return p&&days.some(({dk})=>postActiveOnDay(p,dk));})},
-    {label:'Nuit semaine',    color:'#93c5fd', pids:posts.filter(p=>p.section==='nuit'&&days.some(({dk})=>postActiveOnDay(p,dk))).map(p=>p.id)},
-    {label:'Week-end',        color:'#fbbf24', pids:posts.filter(p=>p.section==='we'&&days.some(({dk})=>postActiveOnDay(p,dk))).map(p=>p.id)},
-  ];
-  let rows='';
-  for(const sec of sections){
-    const activePids=sec.pids.filter(pid=>{const p=getPost(pid);if(!p)return false;return days.some(({dk})=>postActiveOnDay(p,dk));});
-    if(!activePids.length) continue;
-    rows+=`<tr><td class="sec" colspan="${d2+1}"><span class="dot" style="background:${sec.color}"></span>${sec.label}</td></tr>`;
-    for(const pid of activePids){
-      const post=getPost(pid); if(!post) continue;
-      rows+=`<tr><td class="label"><div class="pn">${post.name}</div><div class="ph">${post.start}–${post.end}</div></td>`;
-      for(const {dk,we}of days){
-        const active=postActiveOnDay(post,dk);
-        if(!active){rows+=`<td class="cell${we?' we':''}"></td>`;continue;}
-        const docId=(shifts[dk]||{})[pid];
-        const doc=docId?docs.find(x=>x.id===docId):null;
-        const lbl=doc?ini(doc,docs):'';
-        const color=post.color||'#94a3b8';
-        rows+=doc?`<td class="cell filled${we?' we':''}" style="color:${color};" title="${doc.firstname} ${doc.lastname}">${lbl}</td>`:`<td class="cell${we?' we':''}"></td>`;
-      }
-      rows+=`</tr>`;
-    }
-  }
-  let daysH='<th class="corner">Poste</th>';
-  for(const{d,label,we}of days){daysH+=`<th class="day${we?' we':''}"><div class="dn">${label}</div><div class="dd">${d}</div></th>`;}
-  const css=`*{box-sizing:border-box;margin:0;padding:0;}body{font-family:system-ui,Arial,sans-serif;font-size:12px;color:#1a1a2e;background:#f8fafc;}.header{display:flex;align-items:center;justify-content:space-between;padding:14px 20px;background:#fff;border-bottom:1px solid #e2e8f0;}.title{font-size:13px;font-weight:600;color:#64748b;text-transform:uppercase;letter-spacing:.5px;}.month-label{font-size:28px;font-weight:700;color:#1e3a5f;margin-top:2px;line-height:1.1;}.badge{background:#dbeafe;color:#1d4ed8;font-size:10px;padding:3px 8px;border-radius:6px;font-weight:600;}.wrap{overflow-x:auto;padding:16px;}table{border-collapse:collapse;min-width:100%;background:#fff;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.08);}th,td{padding:0;border:0.5px solid #e2e8f0;}th.corner{min-width:110px;max-width:130px;padding:6px 8px;background:#f1f5f9;font-size:10px;font-weight:600;text-align:left;position:sticky;left:0;z-index:2;}th.day{min-width:34px;text-align:center;background:#f1f5f9;padding:4px 2px;}th.day .dn{font-size:10px;font-weight:600;color:#475569;}th.day .dd{font-size:9px;color:#94a3b8;}th.day.we{background:#fef9c3;}td.label{padding:5px 8px;background:#f8fafc;position:sticky;left:0;z-index:1;min-width:110px;border-right:2px solid #e2e8f0;}td.label .pn{font-weight:600;font-size:11px;color:#1e293b;}td.label .ph{font-size:9px;color:#94a3b8;margin-top:1px;}td.cell{text-align:center;height:30px;min-width:34px;font-size:11px;font-weight:700;}td.cell.we{background:#fefce8;}td.sec{background:#f1f5f9;padding:4px 10px;font-size:9px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#64748b;}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;vertical-align:middle;}.footer{text-align:center;padding:10px;font-size:10px;color:#94a3b8;}`;
-  const html=`<!DOCTYPE html><html lang="fr"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Planning Urgences — ${monthLabel}</title><style>${css}</style></head><body><div class="header"><div><div class="title">Planning des Urgences</div><div class="month-label">${monthLabel}</div></div><div class="badge">lecture seule</div></div><div class="wrap"><table><thead><tr>${daysH}</tr></thead><tbody>${rows}</tbody></table></div><div class="footer">Généré le ${new Date().toLocaleDateString('fr-BE')} · Planning Urgences</div></body></html>`;
-  const blob=new Blob([html],{type:'text/html'});
-  const url=URL.createObjectURL(blob);
-  const a=document.createElement('a');
-  a.href=url;
-  a.download=`julandrex-${MONTHS[m].toLowerCase()}-${y}.html`;
-  a.target='_blank';
-  document.body.appendChild(a);a.click();document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url),2000);
-}
-
-function exportPDFYear(){
-  const css=`@page{size:A4 landscape;margin:8mm;}*{box-sizing:border-box;margin:0;padding:0;font-family:'Segoe UI',Arial,sans-serif;}body{font-size:8px;}h1{font-size:13pt;font-weight:700;margin-bottom:2mm;color:#1e3a5f;}h2{font-size:10px;font-weight:700;color:#fff;background:#1e3a5f;padding:3px 8px;margin:0;}table{border-collapse:collapse;width:100%;margin-bottom:0;}th,td{border:1px solid #cbd5e1;padding:1px 2px;text-align:center;vertical-align:middle;white-space:nowrap;}th{background:#1e3a5f;color:#fff;font-size:7px;font-weight:600;}td.post-col{text-align:left;background:#f1f5f9;font-weight:600;font-size:7px;min-width:70px;max-width:90px;white-space:normal;}td.we{background:#fef9c3;}td.filled{background:#dbeafe;font-size:7px;font-weight:600;}td.empty-active{background:#fff;}td.inactive{background:#f8fafc;}td.sec-hdr{background:#e2e8f0;font-size:7px;font-weight:700;text-align:left;letter-spacing:.3px;text-transform:uppercase;color:#475569;}.month-block{margin-bottom:6mm;page-break-inside:avoid;}@media print{.page-break{page-break-before:always;}.month-block{page-break-inside:avoid;}}`;
-  const sections=[
-    {label:'Journée',   pids:posts.filter(p=>p.section==='jour').map(p=>p.id)},
-    {label:'Soirée',    pids:posts.filter(p=>p.section==='soir').map(p=>p.id)},
-    {label:'Nuit',      pids:posts.filter(p=>p.section==='nuit').map(p=>p.id)},
-    {label:'Week-end',  pids:posts.filter(p=>p.section==='we').map(p=>p.id)},
-  ];
-  let html=`<h1>Planning des Urgences ${cy}</h1><div style="font-size:8px;color:#666;margin-bottom:6mm;">Exporté le ${new Date().toLocaleDateString('fr-BE')}</div>`;
-  for(let m=0;m<12;m++){
-    const d2=dim(cy,m);const monthLabel=`${MONTHS[m]} ${cy}`;
-    html+=`<div class="month-block${m>0?' page-break':''}"><h2>${monthLabel}</h2><table><thead><tr><th style="text-align:left;min-width:70px;">Poste</th>`;
-    for(let d=1;d<=d2;d++){const dk=dkey(cy,m,d);const dow=new Date(dk+'T12:00:00').getDay();const we=isWE(dk);html+=`<th${we?' style="background:#92400e;color:#fef9c3;"':''}>${d}<br><span style="font-size:6px;">${DAYS[dow]}</span></th>`;}
-    html+=`</tr></thead><tbody>`;
-    for(const sec of sections){
-      const activePids=sec.pids.filter(pid=>{const p=getPost(pid);if(!p)return false;for(let d=1;d<=d2;d++){if(postActiveOnDay(p,dkey(cy,m,d)))return true;}return false;});
-      if(!activePids.length)continue;
-      html+=`<tr><td class="sec-hdr" colspan="${d2+1}">${sec.label}</td></tr>`;
-      for(const pid of activePids){const post=getPost(pid);if(!post)continue;html+=`<tr><td class="post-col">${post.name}</td>`;for(let d=1;d<=d2;d++){const dk=dkey(cy,m,d);const we=isWE(dk);const active=postActiveOnDay(post,dk);if(!active){html+=`<td class="inactive"></td>`;continue;}const docId=(shifts[dk]||{})[pid];const doc=docId?docs.find(x=>x.id===docId):null;if(doc)html+=`<td class="filled${we?' we':''}">${pdfLabelShared(dk,pid,doc)}</td>`;else html+=`<td class="${we?'we':'empty-active'}"></td>`;}html+=`</tr>`;}
-    }
-    html+=`</tbody></table></div>`;
-  }
-  printHTML(html,css);
-}
 
 function exportPDF(mode){
   closeModal('export-modal');
