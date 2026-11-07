@@ -4876,7 +4876,9 @@ function init(){
           }
         }
         // Supprimer aussi les shifts dont l'ID ne correspond à aucun médecin connu
-        if(!doc&&!_jlxModeFiches()){ delete shifts[dk][pid]; shiftsChanged=true; } // [2026-10-27 lot 6] hors Citadelle : fiches pas encore chargées
+        // [2026-11-07] Un poste dont le médecin n'est pas (encore) dans la liste chargée est GARDÉ : l'effacer vidait tous les postes
+        // d'un médecin dans la copie locale (Cacciatore 04/11, Devet 07/11 : 9 postes sur 3 mois), et une publication les aurait effacés en base.
+        if(!doc&&!_jlxModeFiches()){ (window._jlxPostesSansMedecin=window._jlxPostesSansMedecin||[]).push(dk+' '+pid+'='+docId); }
       });
     });
     if(shiftsChanged) try{lsSet('planningURG_shifts',JSON.stringify(shifts));}catch(e){}
