@@ -28510,7 +28510,7 @@ function renderClients(){
       else if(c.etape_accueil==='acces_envoye') act='<button class="tb-ghost tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\',true)">Renvoyer l\'accès</button>';
       // Commande sur facture : la facture n'est jamais émise automatiquement (pas de relais de spam), c'est ce bouton.
       if(c.ref && c.mode==='facture' && c.commande_statut==='recue' && !(_cl.factures||[]).some(function(f){ return f.ref===c.ref && f.type==='facture' && !f.note_credit_numero; }))
-        act+=(act?'<br>':'')+'<button class="tb-btn" style="margin-top:4px;padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsFacturer(\''+_clEsc(c.ref)+'\')">Émettre la facture</button>';
+        act+=(act?'<br>':'')+'<button class="tb-primary tb-btn" style="margin-top:4px;padding:6px 12px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);" onclick="clientsFacturer(\''+_clEsc(c.ref)+'\')">💶 Émettre la facture</button>'; // [2026-11-07] bouton plein, bien visible
       var hop=c.hospital_id?_clEsc(c.hopital)+'<br><span style="color:var(--t3,#7f8ea3);">'+_clEsc(c.hospital_id)+' · '+(c.statut_hopital==='active'?'ouvert':'fermé')+'</span>':_clEsc(c.hopital)+'<br><span style="color:#e0a43b;">hôpital pas encore créé</span>';
       h+='<tr style="vertical-align:top;">'+[hop,refs,cmd,conv,sig,ctl,act].map(function(x){ return '<td style="padding:8px;border-bottom:1px solid var(--line2,#2a3b55);">'+x+'</td>'; }).join('')+'</tr>';
     });
