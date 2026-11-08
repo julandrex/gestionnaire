@@ -23639,6 +23639,45 @@ function _exchKey(r){
   var lnk=r.linked_exchange_id&&r.type==='swap';
   return (lnk?r.counter_date:r.proposer_date)+'|'+(lnk?r.counter_post:r.proposer_post);
 }
+// [2026-11-08] Schéma en éventail d'un groupe : le titulaire et son poste à gauche, une ligne par réponse à droite (demande de G. Sorce)
+function _exchFanHtml(g, dk, pid, hid, hName){
+  var nomDe=function(id){ var d=(_exchDocs||[]).find(function(x){ return x.id==id; }); return d?((d.firstname||'')+' '+(d.lastname||'')).trim():'?'; };
+  var ST={open:['en attente','#d97706','rgba(250,204,21,.16)'],accepted:['acceptée — à valider','#2563eb','rgba(59,130,246,.14)'],pending_j1:['switch J+1 en attente','#ea580c','rgba(249,115,22,.14)'],pending_switch:['switch en attente','#ea580c','rgba(249,115,22,.14)'],cancelled:['annulée','#64748b','rgba(148,163,184,.16)']};
+  // [2026-11-08] avis (aide à la décision) par réponse ; la meilleure réponse est marquée « recommandée »
+  var RANG={AUTO_APPROVED:0,MANUAL_REVIEW_FAVORABLE:1,MANUAL_REVIEW_UNFAVORABLE:2};
+  var reps=g.filter(function(r){ return !(r.type==='exchange'&&!r.linked_exchange_id); });
+  var avis=reps.map(function(r){ if(r.status==='cancelled') return null; try{ return _exAvis(_exAnalyse(r)); }catch(e){ return null; } });
+  var meilleur=-1; avis.forEach(function(av,i){ if(!av) return; if(meilleur<0||RANG[av.code]<RANG[avis[meilleur].code]||(RANG[av.code]===RANG[avis[meilleur].code]&&reps[i].status==='accepted'&&reps[meilleur].status!=='accepted')) meilleur=i; }); // à avis égal : la réponse déjà acceptée
+  if(meilleur>=0&&avis.filter(function(av){ return av&&av.code===avis[meilleur].code; }).length>1&&avis[meilleur].code!=='AUTO_APPROVED') meilleur=-1;
+  var lignes=reps.map(function(r,iR){
+    var qui, quoi;
+    if(r.type==='reprise'){ qui=nomDe(r.proposer_id); quoi='reprend le poste'; }
+    else if(r.type==='swap'&&r.linked_exchange_id){ qui=nomDe(r.proposer_id); quoi='propose '+repEsc(_exPn(r.proposer_post))+(r.proposer_post2?' + '+repEsc(_exPn(r.proposer_post2)):'')+(r.proposer_date&&r.proposer_date!==dk?' · '+formatDate(r.proposer_date):''); }
+    else { qui=nomDe(r.acceptor_id||r.proposer_id); quoi=r.acceptor_id?'accepte':'répond'; }
+    var s=ST[r.status]||[r.status,'#64748b','rgba(148,163,184,.16)'];
+    return '<div style="display:flex;align-items:center;gap:8px;">'
+      +'<span style="color:#d97706;font-size:18px;line-height:1;">⟶</span>'
+      +'<div style="flex:1;display:flex;align-items:center;gap:8px;flex-wrap:wrap;background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.55);border-radius:10px;padding:7px 11px;">'
+      +'<b style="font-size:13px;color:var(--t1);">'+repEsc(qui)+'</b>'
+      +'<span style="font-size:12px;color:var(--t2);">'+quoi+'</span>'
+      +(function(){ var av=avis[iR]; if(!av) return ''; var L=AVIS_LBL[av.code]; var sit=av.situations.filter(function(x){ return x!=='aucun_probleme'&&x!=='aucun_conflit'; }).map(function(x){ return SITU_LBL[x]||x; });
+        return '<span title="'+repEsc(L[1]+(sit.length?' — '+sit.join(', '):''))+'" style="font-size:11px;font-weight:700;color:'+L[2]+';background:'+L[3]+';border-radius:999px;padding:2px 9px;">'+L[0]+'</span>'+(iR===meilleur?'<span style="font-size:11px;font-weight:800;color:#b45309;background:rgba(250,204,21,.25);border:1px solid rgba(217,119,6,.5);border-radius:999px;padding:1px 8px;">★ recommandée</span>':''); }())
+      +'<span style="margin-left:auto;font-size:11px;font-weight:700;color:'+s[1]+';background:'+s[2]+';border-radius:999px;padding:2px 9px;">'+s[0]+'</span>'
+      +'</div></div>';
+  });
+  if(!lignes.length) return '';
+  return '<div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin:2px 2px 12px;">'
+    +'<div style="flex:0 1 200px;min-width:160px;background:rgba(56,189,248,.12);border:1px solid rgba(56,189,248,.55);border-radius:10px;padding:9px 12px;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:#38bdf8;margin-bottom:3px;">Titulaire</div>'
+      +'<div style="font-size:13px;font-weight:700;color:var(--t1);">'+repEsc(hName||'?')+'</div>'
+      +'<div style="display:inline-block;margin-top:6px;background:rgba(250,204,21,.16);border:1px solid rgba(250,204,21,.6);border-radius:999px;padding:3px 10px;font-size:12px;font-weight:700;color:var(--t1);">'+repEsc(_exPn(pid))+'</div>'
+      +'<div style="font-size:11.5px;font-weight:700;color:#d97706;margin-top:4px;">'+(dk?formatDate(dk):'')+'</div>'
+    +'</div>'
+    +'<div style="flex:1 1 280px;display:flex;flex-direction:column;gap:6px;">'
+      +'<div style="font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:#34d399;">'+lignes.length+' réponse'+(lignes.length>1?'s':'')+'</div>'
+      +lignes.join('')
+    +'</div></div>';
+}
 var _exchGrpOpen={};
 function _exchGroupsHtml(list, card){
   var groups={}, order=[];
@@ -23665,7 +23704,7 @@ function _exchGroupsHtml(list, card){
       +(hName?' <span style="font-weight:600;color:var(--t2);">· '+repEsc(hName)+'</span>':'')+' <span style="font-weight:500;color:var(--t3);">· '+g.length+' demandes</span>'
       +(nVal?' <span style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">'+nVal+' à valider</span>':'')
       +(nAtt?' <span style="background:var(--bg3);color:var(--t2);border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">'+nAtt+' en attente</span>':'')
-      +'</summary><div style="padding:0 10px 4px;">'+g.map(card).join('')+'</div></details>';
+      +'</summary><div style="padding:0 10px 4px;">'+_exchFanHtml(g,dk,pid,hid,hName)+g.map(card).join('')+'</div></details>';
   }).join('');
 }
 function renderExchanges(){
@@ -24094,11 +24133,33 @@ function renderExchCard(r, TYPE_LBL, STATUS_LBL, STATUS_COL){
     +'<span style="font-size:12px;font-weight:600;">'+(TYPE_LBL[r.type]||r.type)+'</span>'
     +'<span style="font-size:11px;font-weight:700;color:'+statusColor+';">'+(STATUS_LBL[r.status]||r.status)+'</span>'
     +'</div>'
+    +(function(){ // [2026-11-08] carte en schéma : demandeur → poste → cible (demande de G. Sorce)
+      var p2=r.proposer_post2?(function(){ var q=posts.find(function(p){return p.id===r.proposer_post2;}); return q?(q.full||q.name):r.proposer_post2; })():'';
+      var cible, cibleLbl='Ciblé';
+      if(r.type==='reprise'){ cibleLbl='Titulaire'; cible='<b>'+escHtml(_exTitName(r))+'</b>'; }
+      else if(r.target_doctor_id){ cible='<b>'+escHtml(_exTitName(r))+'</b><div style="font-size:11px;color:var(--t3);margin-top:2px;">un médecin en particulier</div>'; }
+      else if(Array.isArray(r.target_doctor_ids)&&r.target_doctor_ids.length){ cible='<b>Médecins disponibles</b><div style="font-size:11px;color:var(--t3);margin-top:2px;">'+r.target_doctor_ids.length+' médecins · poste autorisé</div>'; }
+      else { cible='<b>Tous les médecins</b>'; }
+      // [2026-11-08] avec un accepteur : il devient l'arrivée du schéma, le groupe ciblé passe en petite ligne
+      if(acc){ var grp=r.type==='reprise'?'':(r.target_doctor_id?('demande à : '+escHtml(_exTitName(r))):((Array.isArray(r.target_doctor_ids)&&r.target_doctor_ids.length)?('demande à : '+r.target_doctor_ids.length+' médecins disponibles'):'demande à : tous les médecins'));
+        cibleLbl=r.type==='reprise'?'Accepté par le titulaire':'Accepteur'; cible='<b>'+accName+'</b>'+(grp?'<div style="font-size:11px;color:var(--t3);margin-top:2px;">'+grp+'</div>':''); }
+      var sousDem=r.type==='reprise'?'souhaite reprendre le poste':(r.type==='swap'?'cède ce poste':'propose son poste');
+      var boite=function(fond,bord,coul,lbl,corps){ return '<div style="flex:1 1 150px;min-width:140px;background:'+fond+';border:1px solid '+bord+';border-radius:10px;padding:9px 12px;">'
+        +'<div style="font-size:10px;font-weight:800;letter-spacing:.6px;text-transform:uppercase;color:'+coul+';margin-bottom:3px;">'+lbl+'</div>'
+        +'<div style="font-size:13px;color:var(--t1);line-height:1.35;">'+corps+'</div></div>'; };
+      return '<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:2px 0 10px;">'
+        +boite('rgba(56,189,248,.12)','rgba(56,189,248,.55)','#38bdf8','Demandeur','<b>'+propName+'</b><div style="font-size:11px;color:var(--t3);margin-top:2px;">'+sousDem+'</div>')
+        +'<div style="flex:0 1 auto;display:flex;flex-direction:column;align-items:center;gap:3px;min-width:120px;">'
+          +'<div style="background:rgba(250,204,21,.16);border:1px solid rgba(250,204,21,.6);border-radius:999px;padding:4px 11px;font-size:12px;font-weight:700;color:var(--t1);text-align:center;white-space:nowrap;">'+postName+(p2?' + '+p2:'')+'</div>'
+          +'<div style="font-size:11.5px;font-weight:700;color:#d97706;">'+date+'</div>'
+          +'<div style="font-size:20px;line-height:1;color:#d97706;">⟶</div>'
+        +'</div>'
+        +boite('rgba(52,211,153,.12)','rgba(52,211,153,.55)','#34d399',cibleLbl,cible)
+        +'</div>';
+    }())
     +'<div style="font-size:12px;color:var(--t2);line-height:1.8;">'
-    +((r.type==='exchange'||r.type==='swap')?('<b>Ciblé :</b> '+(r.target_doctor_id?('un médecin en particulier — '+escHtml(_exTitName(r))):((Array.isArray(r.target_doctor_ids)&&r.target_doctor_ids.length)?('médecins disponibles ('+r.target_doctor_ids.length+', poste autorisé)'):'tous les médecins'))+'<br>'):'') // [2026-11-08] groupe ciblé par la demande (G. Sorce)
-    +'<b>Demandeur :</b> '+propName+(r.type==='reprise'?' <i>(souhaite reprendre le poste)</i><br><b>Titulaire :</b> '+_exTitName(r):(r.type==='swap'?' <i>(cède ce poste)</i>':''))+'<br>'
-    +'<b>Poste :</b> '+postName+(r.proposer_post2?(' + '+(posts.find(function(p){return p.id===r.proposer_post2;})?posts.find(function(p){return p.id===r.proposer_post2;}).full||posts.find(function(p){return p.id===r.proposer_post2;}).name:r.proposer_post2)):'') +' — '+date+'<br>'+(r.type==='swap'?'<b>En échange :</b> '+_exSwapCounterTxt(r)+'<br>':'')
-    +(acc?'<b>'+(r.type==='reprise'?'Accepté par le titulaire':'Accepteur')+' :</b> '+accName+'<br>':'')
+    +(r.type==='swap'?'<b>En échange :</b> '+_exSwapCounterTxt(r)+'<br>':'')
+    // [2026-11-08] accepteur affiché dans le schéma
     +(r.message?'<b>Message :</b> <i>'+escHtml(r.message)+'</i><br>':'') // [2026-10-28 XSS échange] texte libre du médecin échappé
     +'<b>Créé le :</b> '+new Date(r.created_at).toLocaleDateString('fr-BE')
     +'</div>'
