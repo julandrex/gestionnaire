@@ -24095,7 +24095,7 @@ function renderExchCard(r, TYPE_LBL, STATUS_LBL, STATUS_COL){
     +'<span style="font-size:11px;font-weight:700;color:'+statusColor+';">'+(STATUS_LBL[r.status]||r.status)+'</span>'
     +'</div>'
     +'<div style="font-size:12px;color:var(--t2);line-height:1.8;">'
-    +((Array.isArray(r.target_doctor_ids)&&r.target_doctor_ids.length)?'<b>Destinataires :</b> '+r.target_doctor_ids.length+' médecins disponibles (poste autorisé)<br>':'') // [2026-10-10] EXCH_DESTINATAIRES
+    +((r.type==='exchange'||r.type==='swap')?('<b>Ciblé :</b> '+(r.target_doctor_id?('un médecin en particulier — '+escHtml(_exTitName(r))):((Array.isArray(r.target_doctor_ids)&&r.target_doctor_ids.length)?('médecins disponibles ('+r.target_doctor_ids.length+', poste autorisé)'):'tous les médecins'))+'<br>'):'') // [2026-11-08] groupe ciblé par la demande (G. Sorce)
     +'<b>Demandeur :</b> '+propName+(r.type==='reprise'?' <i>(souhaite reprendre le poste)</i><br><b>Titulaire :</b> '+_exTitName(r):(r.type==='swap'?' <i>(cède ce poste)</i>':''))+'<br>'
     +'<b>Poste :</b> '+postName+(r.proposer_post2?(' + '+(posts.find(function(p){return p.id===r.proposer_post2;})?posts.find(function(p){return p.id===r.proposer_post2;}).full||posts.find(function(p){return p.id===r.proposer_post2;}).name:r.proposer_post2)):'') +' — '+date+'<br>'+(r.type==='swap'?'<b>En échange :</b> '+_exSwapCounterTxt(r)+'<br>':'')
     +(acc?'<b>'+(r.type==='reprise'?'Accepté par le titulaire':'Accepteur')+' :</b> '+accName+'<br>':'')
