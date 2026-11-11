@@ -28049,83 +28049,282 @@ function factuOpt(k,v){ var o=_fxOpts(); o[k]=(k==='avg'||k==='max')?Math.max(1,
 function _fxComparable(s){ return (s&&s.rows||[]).map(function(r){ return [r.name,Math.round((+r.total||0)*100),(r.detail||[]).length]; }); }
 function _fxDT(v){ return new Date(v).toLocaleString('fr-BE',{dateStyle:'short',timeStyle:'short'}); }
 
+/* [2026-11-11 FACTU-UX] Onglet Facturation plus lisible : parcours en étapes (vérifier, valider, envoyer, facturer),
+   frise des 12 mois avec leur état, cartes de synthèse, sous-onglets (Relevé, Factures, Destinataires, Réglages),
+   liste « avant de générer », recherche par nom. Affichage seulement : le calcul (factuCompute), les écritures
+   (factuValidate, factuSend, factuIssue, factuCreditNote, factuSave…) et le serveur ne changent pas. */
+var FX_MOIS_COURTS=['janv.','févr.','mars','avr.','mai','juin','juil.','août','sept.','oct.','nov.','déc.'];
+function _fxCss(){
+  if(document.getElementById('fx-style')) return;
+  var s=document.createElement('style'); s.id='fx-style';
+  s.textContent=[
+  '.fx{max-width:1180px;}',
+  '.fx-top{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px;}',
+  '.fx-seg{display:inline-flex;border:1px solid var(--line2);border-radius:9px;overflow:hidden;background:var(--bg2);}',
+  '.fx-seg button{border:0;background:none;color:var(--t2);padding:8px 14px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;}',
+  '.fx-seg button:hover{color:var(--t1);background:var(--bg3);}',
+  '.fx-seg button.on,.fx-seg button.on:hover{background:var(--accent);color:#fff;}',
+  '.fx-month{display:flex;align-items:center;gap:6px;margin-left:auto;}',
+  '.fx-month b{min-width:138px;text-align:center;font-size:15px;}',
+  '.fx-year{display:grid;grid-template-columns:repeat(12,minmax(0,1fr));gap:4px;margin-bottom:6px;}',
+  '.fx-ym{border:1px solid var(--line);background:var(--bg2);border-radius:8px;padding:5px 2px 6px;text-align:center;font-size:11px;color:var(--t2);cursor:pointer;font-family:inherit;}',
+  '.fx-ym:hover{border-color:var(--line2);color:var(--t1);}',
+  '.fx-ym.on{border-color:var(--accent);color:var(--t1);font-weight:700;box-shadow:inset 0 0 0 1px var(--accent);}',
+  '.fx-ym i{display:block;width:7px;height:7px;border-radius:50%;margin:4px auto 0;background:var(--line2);}',
+  '.fx-ym.s-val i{background:var(--warn);}.fx-ym.s-env i{background:var(--ok);}',
+  '.fx-legend{display:flex;flex-wrap:wrap;gap:14px;font-size:11px;color:var(--t3);margin:0 2px 14px;}',
+  '.fx-legend i{display:inline-block;width:7px;height:7px;border-radius:50%;margin-right:5px;background:var(--line2);vertical-align:middle;}',
+  '.fx-steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px;margin-bottom:8px;}',
+  '.fx-step{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);}',
+  '.fx-step .n{flex:none;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:700;border:1.5px solid var(--line2);color:var(--t3);}',
+  '.fx-step .l{font-size:13px;font-weight:600;color:var(--t2);}',
+  '.fx-step .d{font-size:11.5px;color:var(--t3);margin-top:2px;line-height:1.4;}',
+  '.fx-step.done .n{background:var(--ok);border-color:var(--ok);color:#fff;}.fx-step.done .l{color:var(--t1);}',
+  '.fx-step.warn .n{background:var(--warn);border-color:var(--warn);color:#fff;}.fx-step.warn .l{color:var(--t1);}',
+  '.fx-step.now{border-color:var(--accent);box-shadow:inset 0 0 0 1px var(--accent);}',
+  '.fx-step.now .n{border-color:var(--accent);color:var(--accent);}.fx-step.now .l{color:var(--t1);}',
+  '.fx-next{display:flex;flex-wrap:wrap;gap:12px;align-items:center;padding:12px 14px;border:1px solid var(--line2);border-left:4px solid var(--accent);border-radius:10px;background:var(--bg2);margin-bottom:14px;}',
+  '.fx-next.ok{border-left-color:var(--ok);}',
+  '.fx-next .txt{flex:1;min-width:240px;}',
+  '.fx-next .txt b{display:block;font-size:14px;margin-bottom:2px;}',
+  '.fx-next .txt span{font-size:12px;color:var(--t2);line-height:1.5;}',
+  '.fx-next .act{display:flex;flex-wrap:wrap;gap:8px;align-items:center;}',
+  '.fx-next .tb-primary{padding:9px 16px;font-size:13px;font-weight:700;}',
+  '.fx-kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:8px;margin-bottom:16px;}',
+  '.fx-kpi{padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--bg2);}',
+  '.fx-kpi .k{font-size:10px;font-weight:600;letter-spacing:.5px;text-transform:uppercase;color:var(--t3);}',
+  '.fx-kpi .v{font-size:20px;font-weight:700;margin-top:3px;font-variant-numeric:tabular-nums;}',
+  '.fx-kpi .s{font-size:11px;color:var(--t3);margin-top:1px;}',
+  '.fx-kpi.bad .v{color:var(--err);}',
+  '.fx-tabs{display:flex;flex-wrap:wrap;gap:2px;border-bottom:1px solid var(--line2);margin-bottom:14px;}',
+  '.fx-tabs button{border:0;background:none;color:var(--t2);padding:9px 14px;font:inherit;font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px;}',
+  '.fx-tabs button:hover{color:var(--t1);}',
+  '.fx-tabs button.on{color:var(--t1);border-bottom-color:var(--accent);}',
+  '.fx-badge{display:inline-block;min-width:18px;padding:1px 6px;margin-left:6px;border-radius:999px;font-size:11px;font-weight:700;text-align:center;background:var(--bg3);color:var(--t2);}',
+  '.fx-badge.warn{background:var(--warn);color:#fff;}.fx-badge.ok{background:var(--ok);color:#fff;}',
+  '.fx-chip{display:inline-block;padding:2px 9px;border-radius:999px;font-size:11px;font-weight:600;white-space:nowrap;border:1px solid var(--line2);color:var(--t2);}',
+  '.fx-chip.ok{color:var(--ok);border-color:var(--ok);}.fx-chip.warn{color:var(--warn);border-color:var(--warn);}.fx-chip.err{color:var(--err);border-color:var(--err);}',
+  '.fx-note{padding:9px 12px;border-left:3px solid var(--warn);background:var(--bg2);border-radius:0 8px 8px 0;margin-bottom:10px;font-size:12px;line-height:1.5;}',
+  '.fx-note.err{border-left-color:var(--err);}',
+  '.fx-bar{display:flex;flex-wrap:wrap;gap:14px;align-items:center;font-size:12px;color:var(--t2);margin-bottom:8px;}',
+  '.fx-bar .finput{width:auto;display:inline-block;}',
+  '.fx-wrap{overflow:auto;max-height:62vh;border:1px solid var(--line2);border-radius:10px;}',
+  '.fx-wrap .data-table th{position:sticky;top:0;background:var(--bg2);z-index:1;}',
+  '.fx-wrap .data-table tbody tr:nth-child(even) td{background:rgba(127,127,127,.045);}',
+  '.fx-wrap .data-table tbody tr:hover td{background:rgba(127,127,127,.10);}',
+  '.fx-wrap .data-table td.num,.fx-wrap .data-table th.num{text-align:right;font-variant-numeric:tabular-nums;}',
+  '.fx-wrap .data-table td.z{color:var(--t3);}',
+  '.fx-wrap .data-table tr.tot td{font-weight:700;border-top:1px solid var(--line2);position:sticky;bottom:0;background:var(--bg2);}',
+  '.fx-foot{font-size:11px;color:var(--t3);margin:6px 2px 0;line-height:1.5;}',
+  '.fx-card{padding:14px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);margin-bottom:12px;}',
+  '.fx-card h4{margin:0 0 6px;font-size:14px;font-weight:600;}',
+  '.fx-card p.h{margin:0 0 10px;font-size:11.5px;color:var(--t3);line-height:1.5;}',
+  '.fx-check{list-style:none;margin:0 0 12px;padding:0;display:grid;gap:6px;}',
+  '.fx-check li{display:flex;flex-wrap:wrap;gap:8px;align-items:center;font-size:12.5px;padding:7px 10px;border:1px solid var(--line);border-radius:8px;}',
+  '.fx-check li .m{flex:none;width:18px;height:18px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:700;color:#fff;background:var(--ok);}',
+  '.fx-check li.ko .m{background:var(--warn);}',
+  '.fx-check li .x{flex:1;min-width:200px;}.fx-check li .x small{display:block;color:var(--t3);font-size:11px;margin-top:1px;}',
+  '.fx-link{border:0;background:none;color:var(--accent);font:inherit;font-size:12px;font-weight:600;cursor:pointer;padding:2px 4px;}',
+  '.fx-link:hover{text-decoration:underline;}',
+  '.fx-empty{padding:30px 16px;text-align:center;color:var(--t3);font-size:13px;line-height:1.6;border:1px dashed var(--line2);border-radius:10px;}',
+  '.fx-prog{height:6px;border-radius:999px;background:var(--bg3);overflow:hidden;margin:6px 0 10px;}',
+  '.fx-prog i{display:block;height:100%;background:var(--ok);}',
+  '.fx-form{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px;}',
+  '.fx-form label{font-size:11px;color:var(--t3);display:block;}',
+  '.fx-form label .finput{margin-top:3px;}',
+  '@media (max-width:760px){.fx-year{grid-template-columns:repeat(6,minmax(0,1fr));}.fx-month{margin-left:0;}}'
+  ].join('\n');
+  document.head.appendChild(s);
+}
+function factuTab(t){ _fx.tab=t; renderFactu(); }
+function factuGo(y,m){ _fx.y=y; _fx.m=m; renderFactu(); }
+function factuNow(){ var d=new Date(); d.setDate(1); d.setMonth(d.getMonth()-1); factuGo(d.getFullYear(),d.getMonth()); }
+// Recherche par nom : masque les lignes sans redessiner l'onglet (le champ garde le curseur)
+function factuFilter(v){
+  _fx.q=String(v||''); var q=_fx.q.trim().toLowerCase(), n=0;
+  document.querySelectorAll('#fx-rows tr[data-n]').forEach(function(tr){ var ok=!q||tr.getAttribute('data-n').indexOf(q)>=0; tr.style.display=ok?'':'none'; if(ok) n++; });
+  var e=document.getElementById('fx-count'); if(e) e.textContent=q?n+' ligne(s) affichée(s)':'';
+}
+function _fxChip(t,k,title){ return '<span class="fx-chip '+(k||'')+'"'+(title?' title="'+escHtml(title)+'"':'')+'>'+t+'</span>'; }
+function _fxNum(v){ var z=!(+v); return '<td class="mono num'+(z?' z':'')+'">'+_fxH(v)+'</td>'; }
+// État d'un mois pour la frise : '' rien, 'val' validé pas envoyé, 'env' envoyé (dernière version)
+function _fxMonthState(kind,y,m){
+  var per=y+'-'+String(m+1).padStart(2,'0')+'-01';
+  var v=(_fx.reports||[]).filter(function(r){ return r.kind===kind&&String(r.period).slice(0,10)===per; })[0];
+  return !v?'':(v.sent_at?'env':'val');
+}
+// Tout ce qu'il faut savoir sur les factures du mois (étape 4, pastille du sous-onglet, section Factures)
+function _fxInvState(last){
+  var per=_fxPeriod(), invs=(_fx.invoices||[]).filter(function(i){ return String(i.period).slice(0,10)===per; })
+    .sort(function(a,b){ return String(a.doctor_name).localeCompare(String(b.doctor_name),'fr')||(a.number<b.number?-1:1); });
+  var live=invs.filter(function(i){ return i.status==='emise'; });
+  var recips=(_fx.recips||[]).filter(function(r){ return r.active&&(r.reports||[]).indexOf('factures')>=0; });
+  var snapRows=(last&&last.snapshot&&last.snapshot.rows)||[], billed={}, sum=0;
+  // Somme des factures en vigueur seulement : une note de crédit (montant négatif) annule une facture déjà sortie du compte
+  live.forEach(function(i){ if(i.kind==='facture'){ billed[i.doctor_id]=i; sum+=+i.total||0; } });
+  var todo=snapRows.filter(function(r){ return !billed[(_fx.dbId||{})[r.id]]; });
+  var noPf=todo.filter(function(r){ return !_fxProfileOk(_fxProfileOf(r.id)); });
+  var noRate=[]; todo.forEach(function(r){ ['jour','nuit','we','exc','adj'].forEach(function(k){ if(+((r.cats||{})[k])&&!(_fxRate(r.role,k==='adj'?'jour':k)>0)&&noRate.indexOf(r.role)<0) noRate.push(r.role); }); });
+  var stOk=!!(_fx.settings&&_fx.settings.client_name&&_fx.settings.client_address);
+  var ready=todo.filter(function(r){ return _fxProfileOk(_fxProfileOf(r.id))&&noRate.indexOf(r.role)<0; }).length;
+  return {invs:invs,live:live,recips:recips,snapRows:snapRows,sum:sum,todo:todo,noPf:noPf,noRate:noRate,stOk:stOk,ready:ready,
+    nFact:live.filter(function(i){ return i.kind==='facture'; }).length};
+}
+
 function renderFactu(){
   var el=document.getElementById('factu-root'); if(!el) return;
-  var o=_fxOpts(), ass=_fx.kind==='assistants', c=factuCompute(_fx.kind,_fx.y,_fx.m), per=_fxPeriod();
+  _fxCss();
+  var o=_fxOpts(), ass=_fx.kind==='assistants', c=factuCompute(_fx.kind,_fx.y,_fx.m), per=_fxPeriod(), mois=MONTHS[_fx.m]+' '+_fx.y;
   var vers=_fx.reports.filter(function(r){ return r.kind===_fx.kind&&String(r.period).slice(0,10)===per; });
   var last=vers[0], changed=!!last&&JSON.stringify(_fxComparable(last.snapshot))!==JSON.stringify(_fxComparable(c));
   var recips=_fx.recips.filter(function(r){ return r.active&&(r.reports||[]).indexOf(_fx.kind)>=0; });
-  var tab=function(k,l){ return '<button class="tb-btn '+(_fx.kind===k?'tb-primary':'tb-ghost')+'" onclick="factuKind(\''+k+'\')">'+l+'</button>'; };
-  var h='<div style="max-width:1150px;">'
-    +'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px;">'
-    +tab('medecins','💶 Médecins — relevé pour facturation')+tab('assistants','🩺 Assistants — rapport d\'heures')
-    +'<span style="flex:1"></span><button class="mc-btn" onclick="factuMonth(-1)">‹</button><b style="min-width:130px;text-align:center;">'+MONTHS[_fx.m]+' '+_fx.y+'</b><button class="mc-btn" onclick="factuMonth(1)">›</button></div>';
-  if(_fx.err) h+='<div style="padding:10px 12px;border:1px solid var(--err);border-radius:8px;color:var(--err);margin-bottom:12px;">⚠️ '+escHtml(_fx.err)+' — onglet réservé au propriétaire de l\'hôpital, connecté avec la double authentification.</div>';
-  // État du mois
-  var st=!last?'<span style="color:var(--warn)">● Pas encore validé</span>'
-    :(last.sent_at?'<span style="color:var(--ok)">● Version '+last.version+' envoyée le '+_fxDT(last.sent_at)+' à '+escHtml((last.sent_to||[]).join(', '))+'</span>'
-      :'<span style="color:var(--warn)">● Version '+last.version+' validée, pas encore envoyée</span>');
-  h+='<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:10px 12px;background:var(--bg2);border:1px solid var(--line2);border-radius:10px;margin-bottom:10px;">'
-    +'<b>'+(ass?'Rapport assistants':'Relevé médecins')+' · '+MONTHS[_fx.m]+' '+_fx.y+'</b>'+st+'<span style="flex:1"></span>'
-    +(c.rows.length?'<button class="tb-btn tb-primary" '+(_fx.busy?'disabled':'')+' onclick="factuValidate()">✔ '+(last?(changed?'Valider la version corrigée (v'+(last.version+1)+')':'Revalider (v'+(last.version+1)+')'):'Valider le mois')+'</button>':'')
-    +(last?'<button class="tb-btn tb-ghost" onclick="factuPdf(\''+last.id+'\')">📄 PDF v'+last.version+'</button>'
-      +'<button class="tb-btn tb-ghost" '+(_fx.busy||!recips.length?'disabled title="Ajoutez un destinataire ci-dessous"':'')+' onclick="factuSend(\''+last.id+'\')">✉ Envoyer v'+last.version+' ('+recips.length+' destinataire'+(recips.length>1?'s':'')+')</button>':'')
-    +'</div>';
-  if(changed) h+='<div style="padding:8px 12px;border-left:3px solid var(--warn);background:var(--bg2);margin-bottom:10px;font-size:12px;">Le planning de '+MONTHS[_fx.m]+' a changé depuis la validation de la version '+last.version+' : les chiffres ci-dessous diffèrent. Validez une version corrigée avant d\'envoyer (elle portera la mention « rectificatif »).</div>';
-  if(c.ecarts.length) h+='<div style="padding:8px 12px;border-left:3px solid var(--err);background:var(--bg2);margin-bottom:10px;font-size:12px;">Écart avec « Heures prestées » pour : '+escHtml(c.ecarts.join(' ; '))+'. À vérifier avant d\'envoyer.</div>';
-  // Options
-  h+='<div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;font-size:12px;color:var(--t2);margin-bottom:8px;">'
-    +'<label><input type="checkbox" '+(o.detail?'checked':'')+' onchange="factuOpt(\'detail\',this.checked)"> '+(ass?'Détail jour par jour dans le PDF':'Une fiche par médecin dans le PDF (récapitulatif à facturer + détail jour par jour)')+'</label>'
-    +(ass?'<label>Plafond hebdo <input class="finput" style="width:60px;display:inline-block" type="number" value="'+o.max+'" onchange="factuOpt(\'max\',this.value)"> h</label>'
-        +'<label>Moyenne sur 13 sem. <input class="finput" style="width:60px;display:inline-block" type="number" value="'+o.avg+'" onchange="factuOpt(\'avg\',this.value)"> h</label>'
-      :'<label><input type="checkbox" '+(o.amounts?'checked':'')+' onchange="factuOpt(\'amounts\',this.checked)"> Montants indicatifs (taux €/h par grade, réglés dans Admin)</label>')
-    +'</div>';
-  // Tableau
-  if(!c.rows.length) h+='<div style="padding:30px;text-align:center;color:var(--t3);">Aucune heure pour '+(ass?'les assistants':'les médecins')+' en '+MONTHS[_fx.m]+' '+_fx.y+'.</div>';
-  else{
-    h+='<div style="overflow:auto;border:1px solid var(--line2);border-radius:10px;"><table class="data-table"><thead><tr>';
+  var iv=ass?null:_fxInvState(last);
+  if(ass&&(_fx.tab==='factures'||_fx.tab==='reglages')) _fx.tab='releve';
+  var tab=_fx.tab||'releve', busy=_fx.busy?'disabled':'';
+  var h='<div class="fx">';
+
+  // ── En-tête : type de document, mois, frise de l'année
+  h+='<div class="fx-top"><div class="fx-seg" role="tablist">'
+    +'<button class="'+(ass?'':'on')+'" onclick="factuKind(\'medecins\')">💶 Médecins — relevé et factures</button>'
+    +'<button class="'+(ass?'on':'')+'" onclick="factuKind(\'assistants\')">🩺 Assistants — rapport d\'heures</button></div>'
+    +'<div class="fx-month"><button class="mc-btn" title="Mois précédent" onclick="factuMonth(-1)">‹</button><b>'+mois+'</b>'
+    +'<button class="mc-btn" title="Mois suivant" onclick="factuMonth(1)">›</button>'
+    +'<button class="tb-btn tb-ghost" onclick="factuNow()">Mois écoulé</button></div></div>';
+  h+='<div class="fx-year">'+FX_MOIS_COURTS.map(function(lbl,i){ var s=_fxMonthState(_fx.kind,_fx.y,i);
+      return '<button class="fx-ym'+(i===_fx.m?' on':'')+(s?' s-'+s:'')+'" title="'+MONTHS[i]+' '+_fx.y+' : '+(s==='env'?'envoyé':s==='val'?'validé, pas envoyé':'pas encore validé')+'" onclick="factuGo('+_fx.y+','+i+')">'+lbl+'<i></i></button>'; }).join('')+'</div>'
+    +'<div class="fx-legend"><span><i></i>pas encore validé</span><span><i style="background:var(--warn)"></i>validé, pas envoyé</span><span><i style="background:var(--ok)"></i>envoyé</span></div>';
+
+  if(_fx.err) h+='<div class="fx-note err">⚠️ '+escHtml(_fx.err)+' — onglet réservé au propriétaire de l\'hôpital, connecté avec la double authentification.</div>';
+
+  // ── Parcours : où en est le mois, et quoi faire ensuite
+  var doc=ass?'rapport':'relevé', nb=c.rows.length, steps=[];
+  steps.push({l:'Vérifier les heures',st:!nb?'todo':(c.ecarts.length?'warn':'done'),
+    d:!nb?'Aucune heure ce mois':nb+' '+(ass?'assistant':'médecin')+(nb>1?'s':'')+' · '+_fxH(c.totals.total)+' h'+(c.ecarts.length?' · '+c.ecarts.length+' écart(s)':'')});
+  steps.push({l:'Valider le mois',st:!last?'todo':(changed?'warn':'done'),
+    d:!last?'Les chiffres ne sont pas figés':(changed?'Planning modifié : à revalider':'Version '+last.version+' du '+_fxDT(last.validated_at))});
+  var sent=!!(last&&last.sent_at);
+  steps.push({l:'Envoyer le '+doc,st:sent&&!changed?'done':'todo',
+    d:sent?'Version '+last.version+' envoyée le '+_fxDT(last.sent_at):(recips.length?recips.length+' destinataire'+(recips.length>1?'s':'')+' prêt'+(recips.length>1?'s':''):'Aucun destinataire enregistré')});
+  if(!ass) steps.push({l:'Émettre les factures',st:!last?'todo':(!iv.todo.length&&iv.nFact?'done':(iv.nFact?'warn':'todo')),
+    d:!last?'Après la validation':(iv.nFact?iv.nFact+' émise'+(iv.nFact>1?'s':'')+(iv.todo.length?' · '+iv.todo.length+' à faire':' · '+_fxEur(iv.sum)):iv.todo.length+' médecin'+(iv.todo.length>1?'s':'')+' à facturer')});
+  var cur=-1; if(nb){ for(var si=1;si<steps.length;si++){ if(steps[si].st!=='done'){ cur=si; break; } } }
+  h+='<div class="fx-steps">'+steps.map(function(s,i){
+      return '<div class="fx-step '+s.st+(i===cur?' now':'')+'"><div class="n">'+(s.st==='done'?'✓':s.st==='warn'?'!':(i+1))+'</div><div><div class="l">'+s.l+'</div><div class="d">'+escHtml(s.d)+'</div></div></div>'; }).join('')+'</div>';
+
+  var bValider=function(lbl){ return '<button class="tb-btn tb-primary" '+busy+' onclick="factuValidate()">✔ '+lbl+'</button>'; };
+  var bPdf=last?'<button class="tb-btn tb-ghost" onclick="factuPdf(\''+last.id+'\')">📄 PDF v'+last.version+'</button>':'';
+  var bSend=function(prim){ return '<button class="tb-btn '+(prim?'tb-primary':'tb-ghost')+'" '+(_fx.busy||!recips.length?'disabled title="Ajoutez un destinataire dans « Destinataires »"':'')+' onclick="factuSend(\''+last.id+'\')">✉ '+(sent?'Renvoyer':'Envoyer')+' v'+last.version+' ('+recips.length+' destinataire'+(recips.length>1?'s':'')+')</button>'; };
+  var nx;
+  if(!nb) nx={t:'Aucune heure à relever pour '+(ass?'les assistants':'les médecins')+' en '+mois+'.',x:'Vérifiez que le planning de ce mois est encodé, ou choisissez un autre mois dans la frise ci-dessus.',a:''};
+  else if(cur===1) nx=changed
+    ?{t:'À faire : valider la version corrigée.',x:'Le planning de '+MONTHS[_fx.m]+' a changé depuis la version '+last.version+'. La nouvelle version portera la mention « rectificatif » et remplacera la précédente.',a:bValider('Valider la version corrigée (v'+(last.version+1)+')')+bPdf}
+    :{t:'À faire : valider le mois.',x:'Relisez le tableau ci-dessous, puis validez : les chiffres sont figés et le PDF devient disponible. Une correction ultérieure crée une nouvelle version, rien n\'est écrasé.',a:bValider('Valider le mois')};
+  else if(cur===2) nx=recips.length
+    ?{t:'À faire : envoyer le '+doc+' validé.',x:'Le PDF de la version '+last.version+' part à '+recips.length+' destinataire'+(recips.length>1?'s':'')+', un e-mail par personne. Vous pouvez d\'abord l\'ouvrir pour le relire.',a:bSend(true)+bPdf}
+    :{t:'À faire : enregistrer un destinataire.',x:'Le '+doc+' est validé, mais personne n\'est enregistré pour le recevoir. Ajoutez au moins une adresse, puis revenez envoyer.',a:'<button class="tb-btn tb-primary" onclick="factuTab(\'dest\')">+ Ajouter un destinataire</button>'+bPdf};
+  else if(cur===3) nx={t:'À faire : émettre les factures.',x:iv.todo.length+' médecin'+(iv.todo.length>1?'s':'')+' à facturer à partir du relevé v'+last.version+(iv.ready<iv.todo.length?' ; '+(iv.todo.length-iv.ready)+' ne sont pas encore prêts (réglages ou fiche à compléter).':'.'),
+      a:(tab==='factures'?'':'<button class="tb-btn tb-primary" onclick="factuTab(\'factures\')">🧾 Ouvrir les factures</button>')+bSend(false)+bPdf};
+  else nx={ok:1,t:'✔ '+mois+' est terminé.',x:(ass?'Le rapport est validé et envoyé.':'Le relevé est validé et envoyé, les factures sont émises.')+' Tout reste consultable ci-dessous.',a:bSend(false)+bPdf};
+  h+='<div class="fx-next'+(nx.ok?' ok':'')+'"><div class="txt"><b>'+nx.t+'</b><span>'+nx.x+'</span></div><div class="act">'+nx.a+'</div></div>';
+
+  // ── Synthèse
+  var kpi=function(k,v,s,bad){ return '<div class="fx-kpi'+(bad?' bad':'')+'"><div class="k">'+k+'</div><div class="v">'+v+'</div>'+(s?'<div class="s">'+s+'</div>':'')+'</div>'; };
+  var T=c.totals;
+  if(nb){
+    h+='<div class="fx-kpis">'+kpi('Total du mois',_fxH(T.total)+' h',nb+' '+(ass?'assistant':'médecin')+(nb>1?'s':''));
     if(!ass){
-      h+='<th>Médecin</th><th>Grade</th><th>Jours sem.</th><th>Nuits sem.</th><th>WE / fériés</th><th>Except.</th><th>Ajust.</th><th>Total</th>'+(o.amounts?'<th>Taux</th><th>Montant</th>':'')+'</tr></thead><tbody>';
-      c.rows.forEach(function(r){ h+='<tr><td>'+escHtml(r.name)+'</td><td style="color:var(--t3)">'+escHtml(r.role)+'</td>'
-        +['jour','nuit','we','exc','adj'].map(function(k){ return '<td class="mono">'+_fxH(r.cats[k])+'</td>'; }).join('')
-        +'<td class="mono" style="font-weight:600">'+_fxH(r.total)+'</td>'+(o.amounts?'<td class="mono">'+(r.rate?r.rate+' €':'–')+'</td><td class="mono">'+(r.rate?r.amount.toLocaleString('fr-BE',{minimumFractionDigits:2})+' €':'–')+'</td>':'')+'</tr>'; });
-      var T=c.totals; h+='<tr style="font-weight:700"><td>Total</td><td>'+c.rows.length+' médecin(s)</td>'+['jour','nuit','we','exc','adj'].map(function(k){ return '<td class="mono">'+_fxH(T[k])+'</td>'; }).join('')
-        +'<td class="mono">'+_fxH(T.total)+'</td>'+(o.amounts?'<td></td><td class="mono">'+T.amount.toLocaleString('fr-BE',{minimumFractionDigits:2})+' €</td>':'')+'</tr>';
+      h+=kpi('Jours de semaine',_fxH(T.jour)+' h')+kpi('Nuits de semaine',_fxH(T.nuit)+' h')+kpi('WE et fériés',_fxH(T.we)+' h');
+      if(o.amounts) h+=kpi('Montant indicatif',_fxEur(T.amount),'taux par grade');
+      h+=kpi('Factures',iv.nFact?String(iv.nFact):'–',iv.nFact?_fxEur(iv.sum):(last?iv.todo.length+' à émettre':'après validation'));
     }else{
-      h+='<th>Assistant</th><th>Grade</th><th>Heures du mois</th><th>Gardes / nuits</th>'+c.rows[0].weeks.map(function(w){ return '<th title="'+escHtml(w.label)+'">'+escHtml(w.label.split(' ')[0])+'</th>'; }).join('')+'<th>Moy. 13 sem. max</th></tr></thead><tbody>';
-      c.rows.forEach(function(r){ h+='<tr><td>'+escHtml(r.name)+(r.flags.length?' <span title="'+escHtml(r.flags.join('\n'))+'" style="color:var(--err)">⚠</span>':'')+'</td><td style="color:var(--t3)">'+escHtml(r.role)+'</td><td class="mono" style="font-weight:600">'+_fxH(r.total)+'</td><td class="mono">'+r.gardes+'</td>'
-        +r.weeks.map(function(w){ return '<td class="mono" style="'+(w.h>o.max?'color:var(--err);font-weight:700':'')+'" title="Moyenne 13 semaines : '+_fxH(w.avg13)+' h">'+_fxH(w.h)+'</td>'; }).join('')
-        +'<td class="mono" style="'+(r.maxAvg13>o.avg?'color:var(--err);font-weight:700':'')+'">'+_fxH(r.maxAvg13)+'</td></tr>'; });
-      h+='<tr style="font-weight:700"><td>Total</td><td>'+c.rows.length+' assistant(s)</td><td class="mono">'+_fxH(c.totals.total)+'</td><td class="mono">'+c.totals.gardes+'</td><td colspan="'+(c.rows[0].weeks.length+1)+'"></td></tr>';
+      var nAl=c.rows.filter(function(r){ return r.flags.length; }).length, mx=c.rows.reduce(function(a,r){ return r.maxWeek&&r.maxWeek.h>a.h?{h:r.maxWeek.h,n:r.name,w:r.maxWeek.label}:a; },{h:0});
+      h+=kpi('Gardes et nuits',String(T.gardes))
+        +kpi('Semaine la plus chargée',_fxH(mx.h)+' h',mx.h?escHtml(mx.n)+' · '+escHtml(mx.w):'',mx.h>o.max)
+        +kpi('Alertes loi de 2010',String(nAl),nAl?'assistant'+(nAl>1?'s':'')+' au-dessus d\'un repère':'aucun dépassement',nAl>0);
     }
-    h+='</tbody></table></div>';
-    h+='<div style="font-size:11px;color:var(--t3);margin:6px 2px 0;">'+(ass
-      ?'Semaines civiles (lundi-dimanche, heures des mois voisins comprises). Moyenne = 13 semaines finissant par la semaine ; les semaines antérieures au planning Julandrex comptent pour 0 h.'
-      :'Classement par jour de début du poste. Le PDF porte un cadre de visa pour le chef de service, qui établit ensuite les factures à partir des fiches par médecin.')+'</div>';
+    h+='</div>';
   }
-  // Historique des versions
+
+  // ── Sous-onglets
+  var tb=function(k,l,b){ return '<button class="'+(tab===k?'on':'')+'" onclick="factuTab(\''+k+'\')">'+l+(b||'')+'</button>'; };
+  var nDest=_fx.recips.filter(function(r){ return r.active; }).length;
+  h+='<div class="fx-tabs">'+tb('releve',ass?'Rapport du mois':'Relevé du mois');
+  if(!ass){
+    h+=tb('factures','Factures',last&&iv.todo.length?'<span class="fx-badge warn">'+iv.todo.length+'</span>':(iv.nFact?'<span class="fx-badge ok">'+iv.nFact+'</span>':''));
+  }
+  h+=tb('dest','Destinataires','<span class="fx-badge'+(nDest?'':' warn')+'">'+nDest+'</span>');
+  if(!ass){
+    var meds=_fxMeds(), nOk=meds.filter(function(d){ return _fxProfileOk(_fxProfileOf(d.id)); }).length;
+    h+=tb('reglages','Réglages',(!iv.stOk||nOk<meds.length)?'<span class="fx-badge warn">!</span>':'');
+  }
+  h+='</div>';
+
+  if(tab==='releve') h+=_fxReleveSection(c,o,ass,last,changed,vers);
+  else if(tab==='factures') h+=_fxInvoiceSection(c,last,iv);
+  else if(tab==='dest') h+=_fxRecipSection();
+  else if(tab==='reglages') h+=_fxSettingsSection(iv);
+  el.innerHTML=h+'</div>';
+  if(_fx.q&&tab==='releve') factuFilter(_fx.q);
+}
+
+function _fxReleveSection(c,o,ass,last,changed,vers){
+  var h='', mois=MONTHS[_fx.m]+' '+_fx.y;
+  if(changed) h+='<div class="fx-note">Le planning de '+MONTHS[_fx.m]+' a changé depuis la validation de la version '+last.version+' : les chiffres ci-dessous diffèrent de ce qui a été validé. Validez une version corrigée avant d\'envoyer.</div>';
+  if(c.ecarts.length) h+='<div class="fx-note err">Écart avec « Heures prestées » pour : '+escHtml(c.ecarts.join(' ; '))+'. À vérifier avant de valider.</div>';
+  if(!c.rows.length) return h+'<div class="fx-empty">Aucune heure pour '+(ass?'les assistants':'les médecins')+' en '+mois+'.<br>Le tableau se remplit dès que le planning du mois contient des postes.</div>';
+  h+='<div class="fx-bar"><input class="finput" style="width:220px" type="search" placeholder="🔎 Chercher un nom…" value="'+escHtml(_fx.q||'')+'" oninput="factuFilter(this.value)"><span id="fx-count"></span><span style="flex:1"></span>'
+    +'<label><input type="checkbox" '+(o.detail?'checked':'')+' onchange="factuOpt(\'detail\',this.checked)"> '+(ass?'Détail jour par jour dans le PDF':'Une fiche par médecin dans le PDF')+'</label>'
+    +(ass?'<label>Plafond par semaine <input class="finput" style="width:64px" type="number" value="'+o.max+'" onchange="factuOpt(\'max\',this.value)"> h</label>'
+        +'<label>Moyenne sur 13 semaines <input class="finput" style="width:64px" type="number" value="'+o.avg+'" onchange="factuOpt(\'avg\',this.value)"> h</label>'
+      :'<label title="Taux €/h par grade, réglés dans Admin"><input type="checkbox" '+(o.amounts?'checked':'')+' onchange="factuOpt(\'amounts\',this.checked)"> Afficher les montants indicatifs</label>')
+    +'</div>';
+  h+='<div class="fx-wrap"><table class="data-table"><thead><tr>';
+  if(!ass){
+    h+='<th>Médecin</th><th>Grade</th><th class="num">Jours sem.</th><th class="num">Nuits sem.</th><th class="num">WE / fériés</th><th class="num">Except.</th><th class="num">Ajust.</th><th class="num">Total</th>'+(o.amounts?'<th class="num">Taux</th><th class="num">Montant</th>':'')+'</tr></thead><tbody id="fx-rows">';
+    c.rows.forEach(function(r){ h+='<tr data-n="'+escHtml(String(r.name).toLowerCase())+'"><td>'+escHtml(r.name)+'</td><td style="color:var(--t3)">'+escHtml(r.role)+'</td>'
+      +['jour','nuit','we','exc','adj'].map(function(k){ return _fxNum(r.cats[k]); }).join('')
+      +'<td class="mono num" style="font-weight:700">'+_fxH(r.total)+'</td>'+(o.amounts?'<td class="mono num'+(r.rate?'':' z')+'">'+(r.rate?r.rate+' €':'–')+'</td><td class="mono num'+(r.rate?'':' z')+'">'+(r.rate?_fxEur(r.amount):'–')+'</td>':'')+'</tr>'; });
+    var T=c.totals; h+='<tr class="tot"><td>Total</td><td>'+c.rows.length+' médecin(s)</td>'+['jour','nuit','we','exc','adj'].map(function(k){ return _fxNum(T[k]); }).join('')
+      +'<td class="mono num">'+_fxH(T.total)+'</td>'+(o.amounts?'<td></td><td class="mono num">'+_fxEur(T.amount)+'</td>':'')+'</tr>';
+  }else{
+    h+='<th>Assistant</th><th>Grade</th><th class="num">Heures du mois</th><th class="num">Gardes / nuits</th>'+c.rows[0].weeks.map(function(w){ return '<th class="num" title="'+escHtml(w.label)+'">'+escHtml(w.label.split(' ')[0])+'</th>'; }).join('')+'<th class="num">Moy. 13 sem. max</th></tr></thead><tbody id="fx-rows">';
+    c.rows.forEach(function(r){ h+='<tr data-n="'+escHtml(String(r.name).toLowerCase())+'"><td>'+escHtml(r.name)+(r.flags.length?' '+_fxChip('⚠ '+r.flags.length,'err',r.flags.join('\n')):'')+'</td><td style="color:var(--t3)">'+escHtml(r.role)+'</td><td class="mono num" style="font-weight:700">'+_fxH(r.total)+'</td><td class="mono num">'+r.gardes+'</td>'
+      +r.weeks.map(function(w){ return '<td class="mono num'+(w.h?'':' z')+'" style="'+(w.h>o.max?'color:var(--err);font-weight:700':'')+'" title="'+escHtml(w.label)+' — moyenne des 13 semaines : '+_fxH(w.avg13)+' h">'+_fxH(w.h)+'</td>'; }).join('')
+      +'<td class="mono num" style="'+(r.maxAvg13>o.avg?'color:var(--err);font-weight:700':'')+'">'+_fxH(r.maxAvg13)+'</td></tr>'; });
+    h+='<tr class="tot"><td>Total</td><td>'+c.rows.length+' assistant(s)</td><td class="mono num">'+_fxH(c.totals.total)+'</td><td class="mono num">'+c.totals.gardes+'</td><td colspan="'+(c.rows[0].weeks.length+1)+'"></td></tr>';
+  }
+  h+='</tbody></table></div>';
+  h+='<div class="fx-foot">'+(ass
+    ?'Semaines civiles (lundi-dimanche, heures des mois voisins comprises). Moyenne = 13 semaines finissant par la semaine ; les semaines antérieures au planning Julandrex comptent pour 0 h. En rouge : au-dessus du plafond ou de la moyenne réglés ci-dessus.'
+    :'Classement par jour de début du poste. Le PDF porte un cadre de visa pour le chef de service, qui établit ensuite les factures à partir des fiches par médecin.')+'</div>';
   if(vers.length){
-    h+='<div style="margin-top:16px;font-weight:600;">Versions validées</div><table class="data-table" style="margin-top:4px;"><tbody>'
-      +vers.map(function(v){ return '<tr><td>v'+v.version+'</td><td>validée le '+_fxDT(v.validated_at)+' par '+escHtml(v.validated_by||'—')+'</td><td class="mono">'+_fxH(v.total_hours)+' h</td><td>'
-        +(v.sent_at?'envoyée le '+_fxDT(v.sent_at)+' à '+escHtml((v.sent_to||[]).join(', ')):'non envoyée')+'</td><td><button class="tb-btn tb-ghost" onclick="factuPdf(\''+v.id+'\')">📄 PDF</button></td></tr>'; }).join('')+'</tbody></table>';
+    h+='<details style="margin-top:16px;" '+(vers.length>1?'':'open')+'><summary style="cursor:pointer;font-weight:600;">Versions validées ('+vers.length+')</summary><table class="data-table" style="margin-top:4px;"><tbody>'
+      +vers.map(function(v,i){ return '<tr><td>'+_fxChip('v'+v.version,i?'':'ok')+(i?'':' <span style="font-size:11px;color:var(--t3)">en vigueur</span>')+'</td><td>validée le '+_fxDT(v.validated_at)+' par '+escHtml(v.validated_by||'—')+'</td><td class="mono">'+_fxH(v.total_hours)+' h</td><td>'
+        +(v.sent_at?'envoyée le '+_fxDT(v.sent_at)+' à '+escHtml((v.sent_to||[]).join(', ')):'<span style="color:var(--t3)">non envoyée</span>')+'</td><td><button class="tb-btn tb-ghost" onclick="factuPdf(\''+v.id+'\')">📄 PDF</button></td></tr>'; }).join('')+'</tbody></table>'
+      +(changed?'':'<div style="margin-top:8px;"><button class="tb-btn tb-ghost" '+(_fx.busy?'disabled':'')+' onclick="factuValidate()">Valider une nouvelle version (v'+(last.version+1)+')</button> <span style="font-size:11px;color:var(--t3)">seulement si une remarque doit être ajoutée : les chiffres n\'ont pas changé.</span></div>')
+      +'</details>';
   }
-  if(!ass) h+=_fxInvoiceSection(c,last); // [2026-11-02] factures établies à partir du relevé validé
-  // Destinataires
-  h+='<div style="margin-top:22px;padding:14px;border:1px solid var(--line2);border-radius:10px;background:var(--bg2);">'
-    +'<div style="font-weight:600;margin-bottom:4px;">Destinataires des PDF</div>'
-    +'<div style="font-size:11.5px;color:var(--t3);margin-bottom:10px;line-height:1.5;">Les e-mails partent uniquement vers les adresses enregistrées ici, un e-mail par personne (personne ne voit les autres adresses). '
-    +'<b>Relevé médecins</b> : le <b>chef de service</b> (contrôle des heures) et la direction médicale si elle le souhaite. <b>Factures</b> : la comptabilité (fournisseurs) ou la perception centrale des honoraires, et le chef de service pour son archive. '
-    +'<b>Assistants</b> : ressources humaines (paie, contrôle de la loi de 2010), maître de stage et, s\'il existe, le coordinateur des MACCS. Préférez des adresses de service (facturation@…, rh@…) à des adresses personnelles.</div>';
-  if(_fx.recips.length) h+='<table class="data-table"><tbody>'+_fx.recips.map(function(r){
-      return '<tr style="'+(r.active?'':'opacity:.5')+'"><td>'+escHtml(r.name)+'</td><td class="mono" style="font-size:11px">'+escHtml(r.email)+'</td><td style="color:var(--t3)">'+escHtml(FX_FONCTIONS[r.fonction]||r.fonction)+'</td>'
-        +['medecins','factures','assistants'].map(function(k){ return '<td><label style="font-size:11px"><input type="checkbox" '+((r.reports||[]).indexOf(k)>=0?'checked':'')+' onchange="factuRecipReports(\''+r.id+'\',\''+k+'\',this.checked)"> '+({medecins:'Relevé médecins',factures:'Factures',assistants:'Rapport assistants'})[k]+'</label></td>'; }).join('')
-        +'<td style="white-space:nowrap"><button class="tb-btn tb-ghost" onclick="factuRecipToggle(\''+r.id+'\','+(!r.active)+')">'+(r.active?'Suspendre':'Réactiver')+'</button> <button class="tb-btn tb-ghost" title="Supprimer" onclick="factuRecipDelete(\''+r.id+'\')">🗑</button></td></tr>'; }).join('')+'</tbody></table>';
-  h+='<div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:10px;align-items:center;">'
+  return h;
+}
+
+function _fxRecipSection(){
+  var h='<div class="fx-card"><h4>Destinataires des PDF</h4>'
+    +'<p class="h">Les e-mails partent uniquement vers les adresses enregistrées ici, un e-mail par personne : personne ne voit les autres adresses. Cochez pour chacun ce qu\'il reçoit.</p>'
+    +'<details style="margin-bottom:10px;"><summary style="cursor:pointer;font-size:12px;color:var(--t2);">Qui doit recevoir quoi ?</summary><div style="font-size:11.5px;color:var(--t3);margin-top:6px;line-height:1.6;">'
+    +'<b>Relevé médecins</b> : le chef de service (contrôle des heures) et la direction médicale si elle le souhaite.<br><b>Factures</b> : la comptabilité (fournisseurs) ou la perception centrale des honoraires, et le chef de service pour son archive.<br>'
+    +'<b>Rapport assistants</b> : ressources humaines (paie, contrôle de la loi de 2010), maître de stage et, s\'il existe, le coordinateur des MACCS.<br>Préférez des adresses de service (facturation@…, rh@…) à des adresses personnelles.</div></details>';
+  if(_fx.recips.length) h+='<div style="overflow-x:auto;"><table class="data-table"><thead><tr><th>Nom ou service</th><th>Adresse</th><th>Fonction</th><th colspan="3">Reçoit</th><th></th></tr></thead><tbody>'+_fx.recips.map(function(r){
+      return '<tr style="'+(r.active?'':'opacity:.5')+'"><td>'+escHtml(r.name)+(r.active?'':' '+_fxChip('suspendu','warn'))+'</td><td class="mono" style="font-size:11px">'+escHtml(r.email)+'</td><td style="color:var(--t3)">'+escHtml(FX_FONCTIONS[r.fonction]||r.fonction)+'</td>'
+        +['medecins','factures','assistants'].map(function(k){ return '<td><label style="font-size:11px;white-space:nowrap"><input type="checkbox" '+((r.reports||[]).indexOf(k)>=0?'checked':'')+' onchange="factuRecipReports(\''+r.id+'\',\''+k+'\',this.checked)"> '+({medecins:'Relevé médecins',factures:'Factures',assistants:'Rapport assistants'})[k]+'</label></td>'; }).join('')
+        +'<td style="white-space:nowrap"><button class="tb-btn tb-ghost" onclick="factuRecipToggle(\''+r.id+'\','+(!r.active)+')">'+(r.active?'Suspendre':'Réactiver')+'</button> <button class="tb-btn tb-ghost" title="Supprimer ce destinataire" onclick="factuRecipDelete(\''+r.id+'\')">🗑</button></td></tr>'; }).join('')+'</tbody></table></div>';
+  else h+='<div class="fx-empty" style="margin-bottom:10px;">Aucun destinataire pour l\'instant.<br>Ajoutez la première adresse ci-dessous : sans destinataire, rien ne peut être envoyé.</div>';
+  h+='<div style="margin-top:14px;font-size:12px;font-weight:600;">Ajouter un destinataire</div><div style="display:flex;flex-wrap:wrap;gap:8px;margin-top:6px;align-items:center;">'
     +'<input id="fx-r-name" class="finput" style="width:180px" placeholder="Nom ou service">'
     +'<input id="fx-r-email" class="finput" style="width:230px" type="email" placeholder="adresse e-mail">'
     +'<select id="fx-r-fn" class="fsel" style="width:250px">'+Object.keys(FX_FONCTIONS).map(function(k){ return '<option value="'+k+'">'+FX_FONCTIONS[k]+'</option>'; }).join('')+'</select>'
-    +'<button class="tb-btn tb-primary" onclick="factuRecipAdd()">+ Ajouter</button></div></div>';
-  el.innerHTML=h+'</div>';
+    +'<button class="tb-btn tb-primary" onclick="factuRecipAdd()">+ Ajouter</button></div>'
+    +'<div class="fx-foot">Les cases « Reçoit » sont précochées selon la fonction choisie ; vous pouvez les changer ensuite.</div></div>';
+  return h;
 }
 
 async function factuValidate(){
@@ -28227,86 +28426,89 @@ function _fxProfileOf(localId){ var id=(_fx.dbId||{})[localId]; return (_fx.prof
 function _fxProfileOk(p){ return !!(p&&p.address&&p.address.trim()&&p.vat_number&&p.vat_number.trim()&&p.iban&&p.iban.trim()); }
 function _fxRolesMed(){ var s={}; docs.forEach(function(d){ if(d.role&&!isAssistantRole(d.role)) s[d.role]=1; }); return Object.keys(s).sort(); }
 function _fxRate(role,cat){ var r=_fx.settings&&_fx.settings.rates&&_fx.settings.rates[role]; return r&&r[cat]!=null?+r[cat]:null; }
+function _fxMeds(){ return docs.filter(function(d){ return !isAssistantRole(d.role)&&!(d.contractEnd&&d.contractEnd<dkey(_fx.y,_fx.m,1)); }).sort(function(a,b){ return (a.lastname+a.firstname).localeCompare(b.lastname+b.firstname,'fr'); }); }
+function factuEditProfile(id){ _fxPfEdit=id; _fx.tab='reglages'; renderFactu(); var e=document.getElementById('fx-pf-form'); if(e&&e.scrollIntoView) e.scrollIntoView({block:'center'}); }
 
-function _fxInvoiceSection(c,last){
-  var per=_fxPeriod(), invs=(_fx.invoices||[]).filter(function(i){ return String(i.period).slice(0,10)===per; })
-    .sort(function(a,b){ return a.doctor_name.localeCompare(b.doctor_name,'fr')||(a.number<b.number?-1:1); });
-  var live=invs.filter(function(i){ return i.status==='emise'; });
-  var recips=(_fx.recips||[]).filter(function(r){ return r.active&&(r.reports||[]).indexOf('factures')>=0; });
-  var h='<div style="margin-top:22px;padding:14px;border:1px solid var(--gold-line,var(--line2));border-radius:10px;">'
-    +'<div style="font-weight:600;font-size:14px;margin-bottom:6px;">🧾 Factures de '+MONTHS[_fx.m]+' '+_fx.y+'</div>';
-  if(!last){ h+='<div style="font-size:12px;color:var(--t3);">Validez d\'abord le relevé du mois : les factures sont établies à partir de la version validée.</div>'; }
-  else{
-    var snapRows=(last.snapshot&&last.snapshot.rows)||[], billed={}, sum=0;
-    live.forEach(function(i){ if(i.kind==='facture') billed[i.doctor_id]=i; sum+=+i.total||0; });
-    var todo=snapRows.filter(function(r){ return !billed[(_fx.dbId||{})[r.id]]; });
-    var noPf=todo.filter(function(r){ return !_fxProfileOk(_fxProfileOf(r.id)); });
-    var noRate=[]; todo.forEach(function(r){ ['jour','nuit','we','exc','adj'].forEach(function(k){ if(+((r.cats||{})[k])&&!(_fxRate(r.role,k==='adj'?'jour':k)>0)&&noRate.indexOf(r.role)<0) noRate.push(r.role); }); });
-    var stOk=_fx.settings&&_fx.settings.client_name&&_fx.settings.client_address;
-    var ready=todo.filter(function(r){ return _fxProfileOk(_fxProfileOf(r.id))&&noRate.indexOf(r.role)<0; }).length;
-    h+='<div style="font-size:12px;color:var(--t2);margin-bottom:8px;line-height:1.6;">À partir du relevé <b>v'+last.version+'</b> · '+snapRows.length+' médecin(s) · '
-      +(todo.length?'<b>'+todo.length+'</b> à facturer':'tous facturés')
-      +(!stOk?' · <span style="color:var(--err)">paramètres de l\'hôpital à compléter</span>':'')
-      +(noPf.length?' · <span style="color:var(--warn)" title="'+escHtml(noPf.map(function(r){ return r.name; }).join(', '))+'">'+noPf.length+' fiche(s) médecin incomplète(s)</span>':'')
-      +(noRate.length?' · <span style="color:var(--warn)">taux non enregistrés : '+escHtml(noRate.join(', '))+'</span>':'')+'</div>';
-    h+='<div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;">'
+function _fxInvoiceSection(c,last,iv){
+  iv=iv||_fxInvState(last);
+  var mois=MONTHS[_fx.m]+' '+_fx.y, invs=iv.invs, live=iv.live, recips=iv.recips, todo=iv.todo;
+  if(!last) return '<div class="fx-empty">Validez d\'abord le relevé de '+mois+' : les factures sont établies à partir de la version validée, jamais à partir de chiffres qui peuvent encore bouger.<br><button class="tb-btn tb-primary" style="margin-top:10px" onclick="factuTab(\'releve\')">Voir le relevé</button></div>';
+  var h='';
+  // Avant de générer : ce qui manque, avec le chemin pour le compléter
+  var li=function(ok,t,sub,act){ return '<li class="'+(ok?'':'ko')+'"><span class="m">'+(ok?'✓':'!')+'</span><span class="x">'+t+(sub?'<small>'+sub+'</small>':'')+'</span>'+(act||'')+'</li>'; };
+  var go=function(l){ return '<button class="fx-link" onclick="factuTab(\'reglages\')">'+l+' →</button>'; };
+  if(todo.length){
+    h+='<div class="fx-card"><h4>🧾 Générer les factures de '+mois+'</h4><p class="h">À partir du relevé <b>v'+last.version+'</b> : '+iv.snapRows.length+' médecin(s), dont <b>'+todo.length+'</b> pas encore facturé'+(todo.length>1?'s':'')+'. Tout ce qui est coché ci-dessous est prêt.</p><ul class="fx-check">'
+      +li(iv.stOk,'Hôpital client',iv.stOk?escHtml(_fx.settings.client_name):'Nom et adresse de l\'hôpital à indiquer : ils figurent sur chaque facture.',iv.stOk?'':go('Compléter'))
+      +li(!iv.noRate.length,'Taux horaires par grade',iv.noRate.length?'Pas de taux enregistré pour : '+escHtml(iv.noRate.join(', '))+'.':'Un taux est enregistré pour chaque grade à facturer.',iv.noRate.length?go('Enregistrer les taux'):'')
+      +li(!iv.noPf.length,'Fiches de facturation des médecins',iv.noPf.length?iv.noPf.length+' fiche(s) incomplète(s) (adresse, n° d\'entreprise, IBAN) : '+escHtml(iv.noPf.slice(0,6).map(function(r){ return r.name; }).join(', '))+(iv.noPf.length>6?'…':'')+'. Ces médecins sont laissés de côté, les autres peuvent déjà être facturés.':'Toutes les fiches nécessaires sont complètes.',iv.noPf.length?go('Compléter les fiches'):'')
+      +'</ul><div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;">'
       +'<label style="font-size:12px;">Date des factures <input id="fx-inv-date" type="date" class="finput" style="width:150px;display:inline-block" value="'+new Date().toISOString().slice(0,10)+'"></label>'
-      +(todo.length?'<button class="tb-btn tb-primary" '+(_fx.busy||!ready||!stOk?'disabled title="Complétez les paramètres, les taux et les fiches ci-dessous"':'')+' onclick="factuIssue(\''+last.id+'\')">🧾 Générer '+ready+' facture'+(ready>1?'s':'')+(ready<todo.length?' (sur '+todo.length+')':'')+'</button>':'')
-      +(invs.length?'<button class="tb-btn tb-ghost" onclick="factuInvPdf(null)">📄 Toutes (PDF)</button>'
-        +'<button class="tb-btn tb-ghost" '+(_fx.busy||!recips.length||!live.length?'disabled title="Cochez « Factures » pour au moins un destinataire"':'')+' onclick="factuInvSend()">✉ Envoyer les factures ('+recips.length+' destinataire'+(recips.length>1?'s':'')+')</button>':'')
-      +'</div>';
-  }
+      +'<button class="tb-btn tb-primary" style="padding:9px 16px;font-size:13px;font-weight:700;" '+(_fx.busy||!iv.ready||!iv.stOk?'disabled title="Complétez les points marqués « ! » ci-dessus"':'')+' onclick="factuIssue(\''+last.id+'\')">🧾 Générer '+iv.ready+' facture'+(iv.ready>1?'s':'')+(iv.ready<todo.length?' (sur '+todo.length+')':'')+'</button>'
+      +'<span style="font-size:11px;color:var(--t3);">Les numéros sont attribués définitivement.</span></div></div>';
+  }else if(invs.length) h+='<div class="fx-note" style="border-left-color:var(--ok)">✔ Tous les médecins du relevé v'+last.version+' sont facturés pour '+mois+'.</div>';
   if(invs.length){
-    var hoursOf={}; ((last&&last.snapshot&&last.snapshot.rows)||[]).forEach(function(r){ var id=(_fx.dbId||{})[r.id]; if(id!=null) hoursOf[id]=+r.total||0; });
-    h+='<table class="data-table"><thead><tr><th>N°</th><th>Médecin</th><th>Date</th><th>Heures</th><th>Montant</th><th>État</th><th>Envoi</th><th></th></tr></thead><tbody>'
+    var hoursOf={}; iv.snapRows.forEach(function(r){ var id=(_fx.dbId||{})[r.id]; if(id!=null) hoursOf[id]=+r.total||0; });
+    h+='<div class="fx-bar"><b style="color:var(--t1);font-size:13px;">'+invs.length+' pièce'+(invs.length>1?'s':'')+' · '+iv.nFact+' facture'+(iv.nFact>1?'s':'')+' en vigueur, '+_fxEur(iv.sum)+'</b><span style="flex:1"></span>'
+      +'<button class="tb-btn tb-ghost" onclick="factuInvPdf(null)">📄 Toutes en un PDF</button>'
+      +'<button class="tb-btn tb-ghost" '+(_fx.busy||!recips.length||!live.length?'disabled title="Cochez « Factures » pour au moins un destinataire"':'')+' onclick="factuInvSend()">✉ Envoyer les factures ('+recips.length+' destinataire'+(recips.length>1?'s':'')+')</button></div>';
+    h+='<div class="fx-wrap"><table class="data-table"><thead><tr><th>N°</th><th>Médecin</th><th>Date</th><th class="num">Heures</th><th class="num">Montant</th><th>État</th><th>Envoi</th><th></th></tr></thead><tbody>'
       +invs.map(function(i){
         var warn=i.kind==='facture'&&i.status==='emise'&&hoursOf[i.doctor_id]!=null&&Math.abs(hoursOf[i.doctor_id]-(+i.hours||0))>0.01;
-        return '<tr style="'+(i.status==='annulee'?'opacity:.55':'')+'"><td class="mono">'+escHtml(i.number)+'</td><td>'+escHtml(i.doctor_name)+(i.kind==='note_credit'?' <span style="color:var(--err);font-size:11px">note de crédit</span>':'')
-          +(warn?' <span title="Le relevé v'+last.version+' compte '+_fxH(hoursOf[i.doctor_id])+' h : émettez une note de crédit puis régénérez la facture" style="color:var(--warn)">⚠ heures modifiées</span>':'')+'</td>'
-          +'<td>'+new Date(i.issue_date+'T12:00:00').toLocaleDateString('fr-BE')+'</td><td class="mono">'+_fxH(i.hours)+'</td><td class="mono" style="font-weight:600">'+_fxEur(i.total)+'</td>'
-          +'<td>'+(i.status==='annulee'?'annulée':'en vigueur')+'</td><td style="font-size:11px">'+(i.sent_at?new Date(i.sent_at).toLocaleDateString('fr-BE'):'—')+'</td>'
-          +'<td style="white-space:nowrap"><button class="tb-btn tb-ghost" onclick="factuInvPdf(\''+i.id+'\')">📄</button>'
-          +(i.kind==='facture'&&i.status==='emise'?' <button class="tb-btn tb-ghost" onclick="factuCreditNote(\''+i.id+'\')">Note de crédit</button>':'')+'</td></tr>';
-      }).join('')+'</tbody></table>'
-      +'<div style="font-size:11px;color:var(--t3);margin-top:6px;">Une facture émise ne se modifie pas : pour la corriger, émettez une note de crédit (elle l\'annule), puis régénérez la facture.</div>';
-  }
+        return '<tr style="'+(i.status==='annulee'?'opacity:.55':'')+'"><td class="mono">'+escHtml(i.number)+'</td><td>'+escHtml(i.doctor_name)
+          +(warn?' '+_fxChip('⚠ heures modifiées','warn','Le relevé v'+last.version+' compte '+_fxH(hoursOf[i.doctor_id])+' h : émettez une note de crédit puis régénérez la facture'):'')+'</td>'
+          +'<td>'+new Date(i.issue_date+'T12:00:00').toLocaleDateString('fr-BE')+'</td><td class="mono num">'+_fxH(i.hours)+'</td><td class="mono num" style="font-weight:600">'+_fxEur(i.total)+'</td>'
+          +'<td>'+(i.kind==='note_credit'?_fxChip('note de crédit','err'):(i.status==='annulee'?_fxChip('annulée',''):_fxChip('en vigueur','ok')))+'</td>'
+          +'<td style="font-size:11px">'+(i.sent_at?_fxChip('envoyée le '+new Date(i.sent_at).toLocaleDateString('fr-BE'),'ok'):'<span style="color:var(--t3)">pas envoyée</span>')+'</td>'
+          +'<td style="white-space:nowrap"><button class="tb-btn tb-ghost" title="Télécharger le PDF" onclick="factuInvPdf(\''+i.id+'\')">📄 PDF</button>'
+          +(i.kind==='facture'&&i.status==='emise'?' <button class="tb-btn tb-ghost" onclick="factuCreditNote(\''+i.id+'\')">Annuler (note de crédit)</button>':'')+'</td></tr>';
+      }).join('')+'</tbody></table></div>'
+      +'<div class="fx-foot">Une facture émise ne se modifie pas : pour la corriger, annulez-la par une note de crédit, puis régénérez la facture.</div>';
+  }else if(!todo.length) h+='<div class="fx-empty">Aucun médecin à facturer pour '+mois+'.</div>';
+  return h;
+}
+
+function _fxSettingsSection(iv){
   // Paramètres de l'hôpital et taux
-  var st=_fx.settings||{}, rates=getHourlyRates();
-  h+='<details style="margin-top:14px;"><summary style="cursor:pointer;font-weight:600;">⚙️ Paramètres de facturation (hôpital client, taux, mentions)</summary><div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:8px;margin-top:10px;">'
-    +'<label style="font-size:11px;color:var(--t3)">Nom de l\'hôpital (client)<input id="fx-s-name" class="finput" value="'+escHtml(st.client_name||_jlxHospName()||'')+'"></label>'
-    +'<label style="font-size:11px;color:var(--t3)">N° TVA de l\'hôpital<input id="fx-s-vat" class="finput" value="'+escHtml(st.client_vat||'')+'" placeholder="BE0…"></label>'
-    +'<label style="font-size:11px;color:var(--t3)">Adresse<textarea id="fx-s-addr" class="finput" rows="2">'+escHtml(st.client_address||'')+'</textarea></label>'
-    +'<label style="font-size:11px;color:var(--t3)">Référence à rappeler (service, bon de commande)<input id="fx-s-ref" class="finput" value="'+escHtml(st.client_ref||'')+'"></label>'
-    +'<label style="font-size:11px;color:var(--t3)">Délai de paiement (jours)<input id="fx-s-days" type="number" min="0" max="120" class="finput" value="'+(st.payment_days!=null?st.payment_days:30)+'"></label>'
-    +'<label style="font-size:11px;color:var(--t3)">Mention TVA<input id="fx-s-vatm" class="finput" value="'+escHtml(st.vat_mention!=null?st.vat_mention:'Exonération de TVA — article 44, § 1er, 1° du Code de la TVA (prestations médicales).')+'"></label>'
-    +'<label style="font-size:11px;color:var(--t3);grid-column:1/-1">Mention d\'émission (facultative)<input id="fx-s-issm" class="finput" value="'+escHtml(st.issuer_mention||'')+'" placeholder="ex. Facture établie par le chef de service au nom et pour le compte du prestataire."></label></div>'
-    +'<table class="data-table" style="margin-top:10px;"><thead><tr><th>Taux €/h par grade</th>'+FX_RATE_CATS.map(function(x){ return '<th>'+x[1]+'</th>'; }).join('')+'</tr></thead><tbody>'
+  var st=_fx.settings||{}, rates=getHourlyRates(), stOk=iv?iv.stOk:!!(st.client_name&&st.client_address);
+  var h='<div class="fx-card"><h4>⚙️ Hôpital client, taux et mentions '+(stOk?_fxChip('complet','ok'):_fxChip('à compléter','warn'))+'</h4>'
+    +'<p class="h">Ces informations sont imprimées sur chaque facture. Elles valent pour tous les mois ; une facture déjà émise garde celles du jour de son émission.</p><div class="fx-form">'
+    +'<label>Nom de l\'hôpital (client) *<input id="fx-s-name" class="finput" value="'+escHtml(st.client_name||_jlxHospName()||'')+'"></label>'
+    +'<label>N° TVA de l\'hôpital<input id="fx-s-vat" class="finput" value="'+escHtml(st.client_vat||'')+'" placeholder="BE0…"></label>'
+    +'<label>Adresse *<textarea id="fx-s-addr" class="finput" rows="2">'+escHtml(st.client_address||'')+'</textarea></label>'
+    +'<label>Référence à rappeler (service, bon de commande)<input id="fx-s-ref" class="finput" value="'+escHtml(st.client_ref||'')+'"></label>'
+    +'<label>Délai de paiement (jours)<input id="fx-s-days" type="number" min="0" max="120" class="finput" value="'+(st.payment_days!=null?st.payment_days:30)+'"></label>'
+    +'<label>Mention TVA<input id="fx-s-vatm" class="finput" value="'+escHtml(st.vat_mention!=null?st.vat_mention:'Exonération de TVA — article 44, § 1er, 1° du Code de la TVA (prestations médicales).')+'"></label>'
+    +'<label style="grid-column:1/-1">Mention d\'émission (facultative)<input id="fx-s-issm" class="finput" value="'+escHtml(st.issuer_mention||'')+'" placeholder="ex. Facture établie par le chef de service au nom et pour le compte du prestataire."></label></div>'
+    +'<div style="overflow-x:auto;"><table class="data-table" style="margin-top:12px;"><thead><tr><th>Taux €/h par grade</th>'+FX_RATE_CATS.map(function(x){ return '<th>'+x[1]+'</th>'; }).join('')+'</tr></thead><tbody>'
     +_fxRolesMed().map(function(role,ri){ return '<tr><td>'+escHtml(role)+'</td>'+FX_RATE_CATS.map(function(x){ var v=_fxRate(role,x[0]); if(v==null) v=+rates[role]||'';
         return '<td><input class="finput fx-rate" data-role="'+ri+'" data-cat="'+x[0]+'" type="number" min="0" step="0.01" style="width:90px" value="'+v+'"></td>'; }).join('')+'</tr>'; }).join('')
-    +'</tbody></table><div style="font-size:11px;color:var(--t3);margin:4px 0 8px;">Les ajustements validés sont facturés au taux de jour. Taux préremplis avec ceux de l\'Admin tant qu\'ils ne sont pas enregistrés ici.</div>'
-    +'<button class="tb-btn tb-primary" onclick="factuSaveSettings()">Enregistrer les paramètres</button></details>';
+    +'</tbody></table></div><div class="fx-foot" style="margin-bottom:10px;">Les ajustements validés sont facturés au taux de jour. Les taux affichés viennent de l\'Admin tant qu\'ils ne sont pas enregistrés ici : cliquez sur « Enregistrer » pour les confirmer.</div>'
+    +'<button class="tb-btn tb-primary" onclick="factuSaveSettings()">Enregistrer les paramètres</button></div>';
   // Fiches des médecins
-  var meds=docs.filter(function(d){ return !isAssistantRole(d.role)&&!(d.contractEnd&&d.contractEnd<dkey(_fx.y,_fx.m,1)); }).sort(function(a,b){ return (a.lastname+a.firstname).localeCompare(b.lastname+b.firstname,'fr'); });
-  var nOk=meds.filter(function(d){ return _fxProfileOk(_fxProfileOf(d.id)); }).length;
-  h+='<details style="margin-top:10px;" '+(_fxPfEdit!=null?'open':'')+'><summary style="cursor:pointer;font-weight:600;">👤 Fiches de facturation des médecins ('+nOk+' / '+meds.length+' complètes)</summary>'
-    +'<div style="font-size:11.5px;color:var(--t3);margin:8px 0;">Identité du prestataire imprimée sur sa facture : nom ou société, adresse, n° d\'entreprise (BCE/TVA), INAMI, IBAN. Le préfixe forme la série de numéros de ce médecin (PRÉFIXE-année-001…) ; « premier n° » permet de continuer une série existante.</div>';
+  var meds=_fxMeds(), nOk=meds.filter(function(d){ return _fxProfileOk(_fxProfileOf(d.id)); }).length;
+  h+='<div class="fx-card"><h4>👤 Fiches de facturation des médecins <span style="font-weight:400;color:var(--t3);font-size:12px;">'+nOk+' complète'+(nOk>1?'s':'')+' sur '+meds.length+'</span></h4>'
+    +'<div class="fx-prog"><i style="width:'+(meds.length?Math.round(nOk/meds.length*100):0)+'%"></i></div>'
+    +'<p class="h">Identité du prestataire imprimée sur sa facture : nom ou société, adresse, n° d\'entreprise (BCE/TVA), INAMI, IBAN. Une fiche est complète avec l\'adresse, le n° d\'entreprise et l\'IBAN. Le préfixe forme la série de numéros de ce médecin (PRÉFIXE-année-001…) ; « premier n° » permet de continuer une série existante.</p>';
   if(_fxPfEdit!=null){
     var d=docs.find(function(x){ return x.id===_fxPfEdit; }), p=_fxProfileOf(_fxPfEdit)||{};
-    var pre=p.prefix||((d.lastname||'').normalize('NFD').replace(/[^A-Za-z]/g,'').slice(0,4)+(d.firstname||'').normalize('NFD').replace(/[^A-Za-z]/g,'').slice(0,1)).toUpperCase();
-    var f=function(id,lbl,val,ph){ return '<label style="font-size:11px;color:var(--t3)">'+lbl+'<input id="'+id+'" class="finput" value="'+escHtml(val||'')+'" placeholder="'+(ph||'')+'"></label>'; };
-    h+='<div style="padding:12px;border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;"><b>'+escHtml(d.firstname+' '+d.lastname)+'</b>'
-      +'<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:8px;margin-top:8px;">'
-      +f('fx-p-name','Nom ou société (émetteur)',p.legal_name||('Dr '+d.firstname+' '+d.lastname))
-      +'<label style="font-size:11px;color:var(--t3)">Adresse<textarea id="fx-p-addr" class="finput" rows="2">'+escHtml(p.address||'')+'</textarea></label>'
-      +f('fx-p-vat','N° d\'entreprise BCE / TVA',p.vat_number,'BE0…')+f('fx-p-inami','N° INAMI',p.inami)
-      +f('fx-p-iban','IBAN',p.iban,'BE..')+f('fx-p-bic','BIC',p.bic)
-      +f('fx-p-prefix','Préfixe des numéros (lettres, chiffres)',pre)+'<label style="font-size:11px;color:var(--t3)">Premier n° de la série<input id="fx-p-start" type="number" min="1" class="finput" value="'+(p.start_seq||1)+'"></label></div>'
-      +'<div style="margin-top:8px;display:flex;gap:8px;"><button class="tb-btn tb-primary" onclick="factuSaveProfile('+d.id+')">Enregistrer</button><button class="tb-btn tb-ghost" onclick="_fxPfEdit=null;renderFactu()">Fermer</button></div></div>';
+    if(d){
+      var pre=p.prefix||((d.lastname||'').normalize('NFD').replace(/[^A-Za-z]/g,'').slice(0,4)+(d.firstname||'').normalize('NFD').replace(/[^A-Za-z]/g,'').slice(0,1)).toUpperCase();
+      var f=function(id,lbl,val,ph){ return '<label>'+lbl+'<input id="'+id+'" class="finput" value="'+escHtml(val||'')+'" placeholder="'+(ph||'')+'"></label>'; };
+      h+='<div id="fx-pf-form" style="padding:12px;border:1px solid var(--accent);border-radius:8px;margin-bottom:10px;"><b>'+escHtml(d.firstname+' '+d.lastname)+'</b>'
+        +'<div class="fx-form" style="margin-top:8px;">'
+        +f('fx-p-name','Nom ou société (émetteur) *',p.legal_name||('Dr '+d.firstname+' '+d.lastname))
+        +'<label>Adresse *<textarea id="fx-p-addr" class="finput" rows="2">'+escHtml(p.address||'')+'</textarea></label>'
+        +f('fx-p-vat','N° d\'entreprise BCE / TVA *',p.vat_number,'BE0…')+f('fx-p-inami','N° INAMI',p.inami)
+        +f('fx-p-iban','IBAN *',p.iban,'BE..')+f('fx-p-bic','BIC',p.bic)
+        +f('fx-p-prefix','Préfixe des numéros (lettres, chiffres)',pre)+'<label>Premier n° de la série<input id="fx-p-start" type="number" min="1" class="finput" value="'+(p.start_seq||1)+'"></label></div>'
+        +'<div style="margin-top:10px;display:flex;gap:8px;"><button class="tb-btn tb-primary" onclick="factuSaveProfile('+d.id+')">Enregistrer la fiche</button><button class="tb-btn tb-ghost" onclick="_fxPfEdit=null;renderFactu()">Fermer sans enregistrer</button></div></div>';
+    }
   }
-  h+='<table class="data-table"><tbody>'+meds.map(function(d){ var p=_fxProfileOf(d.id), ok=_fxProfileOk(p);
-      return '<tr><td>'+escHtml(d.lastname+' '+d.firstname)+'</td><td style="color:var(--t3)">'+escHtml(d.role)+'</td><td class="mono" style="font-size:11px">'+escHtml(p?p.prefix:'')+'</td><td style="color:'+(ok?'var(--ok)':p?'var(--warn)':'var(--t3)')+'">'+(ok?'complète':p?'incomplète':'à remplir')+'</td>'
-        +'<td><button class="tb-btn tb-ghost" onclick="_fxPfEdit='+d.id+';renderFactu()">✏️</button></td></tr>'; }).join('')+'</tbody></table></details>';
-  return h+'</div>';
+  h+='<div style="overflow-x:auto;"><table class="data-table"><tbody>'+meds.map(function(d){ var p=_fxProfileOf(d.id), ok=_fxProfileOk(p);
+      return '<tr><td>'+escHtml(d.lastname+' '+d.firstname)+'</td><td style="color:var(--t3)">'+escHtml(d.role)+'</td><td class="mono" style="font-size:11px">'+escHtml(p?p.prefix:'')+'</td><td>'+(ok?_fxChip('complète','ok'):p?_fxChip('incomplète','warn'):_fxChip('à remplir',''))+'</td>'
+        +'<td style="text-align:right"><button class="tb-btn tb-ghost" onclick="factuEditProfile('+d.id+')">✏️ '+(p?'Modifier':'Remplir')+'</button></td></tr>'; }).join('')+'</tbody></table></div></div>';
+  return h;
 }
 async function factuSaveSettings(){
   var g=function(id){ return (document.getElementById(id).value||'').trim(); }, roles=_fxRolesMed(), rates={};
