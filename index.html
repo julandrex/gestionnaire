@@ -3821,12 +3821,29 @@ async function _resyncConfigFromSupabase(opts){
 // dernier chargement/resync local. S'ils diffèrent, un autre onglet/appareil
 // a publié ce mois entre-temps : écraser maintenant perdrait ce travail.
 // Retourne true si on peut continuer (pas de conflit, ou confirmé par l'utilisateur).
+// [2026-11-12 LOT0-C1] Aides de la publication.
+// Nombre de cases remplies d'un planning {jour:{poste:médecin}}.
+function _jlxCompterCases(sh){
+  let n=0;
+  if(sh&&typeof sh==='object') Object.keys(sh).forEach(function(dk){ const d=sh[dk];
+    if(d&&typeof d==='object') Object.keys(d).forEach(function(p){ if(d[p]!=null&&d[p]!=='') n++; }); });
+  return n;
+}
+// Mois ('AAAA-MM') vidés VOLONTAIREMENT sur ce poste par « Réinitialiser le planning » et pas encore publiés : les seuls
+// qu'une publication peut supprimer du serveur (après confirmation).
+function _jlxMoisVidesVoulus(){ try{ const a=JSON.parse(lsGet('planningURG_moisVidesVoulus')||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function _jlxMoisVidesVoulusSet(a){ try{ lsSet('planningURG_moisVidesVoulus',JSON.stringify(a||[])); }catch(e){} }
+// Motif du dernier refus de checkMonthConflictBeforeOverwrite (pour le compte rendu de publication).
+function _jlxConflitRaison(){ return window._jlxConflitErr?('vérification du serveur impossible : '+window._jlxConflitErr):'conflit non confirmé'; }
+
 async function checkMonthConflictBeforeOverwrite(sbClient, hospital, year, month, monthLabel){
+  window._jlxConflitErr=null; // [2026-11-12 LOT0-C1]
   try{
-    const {data}=await sbClient.from('planning_months')
+    const {data,error}=await sbClient.from('planning_months')
       .select('published_at')
       .eq('hospital_id',hospital).eq('year',year).eq('month',month)
       .maybeSingle();
+    if(error) throw error; // [2026-11-12 LOT0-C1] avant : une erreur de lecture passait pour « aucun conflit »
     const serverPublishedAt=data?data.published_at:null;
     const monthPrefix=`${year}-${('0'+(month+1)).slice(-2)}`;
     const knownPublishedAt=_knownPublishedAt[monthPrefix]||null;
@@ -3839,10 +3856,24 @@ async function checkMonthConflictBeforeOverwrite(sbClient, hospital, year, month
         '(Annuler = recharger la page pour récupérer la version la plus récente avant de continuer)'
       );
     }
+    // [2026-11-12 LOT0-C1] Le mois existe sur le serveur mais ce poste n'en a jamais chargé la version (poste neuf, stockage
+    // effacé, resynchronisation jamais faite) : on demande au lieu d'écraser d'office.
+    if(serverPublishedAt&&!knownPublishedAt){
+      return confirm(
+        '⚠️ '+monthLabel+' existe déjà sur le serveur (publié le '+new Date(serverPublishedAt).toLocaleString('fr-BE',{dateStyle:'short',timeStyle:'short'})+'), '+
+        'mais ce poste n\'a jamais chargé cette version.\n\n'+
+        'Continuer la remplacera par la version de ce poste.\n\n'+
+        'OK = remplacer quand même\n'+
+        'Annuler = ne pas toucher à ce mois (rechargez la page pour récupérer la version du serveur)'
+      );
+    }
     return true;
   }catch(e){
-    console.warn('[conflict-check] erreur',e.message);
-    return true; // ne pas bloquer la publication si la vérification échoue elle-même
+    // [2026-11-12 LOT0-C1] Fermé en cas de doute : si la vérification échoue (réseau, droits), on ne publie pas ce mois.
+    // Avant : `return true`, donc une coupure réseau levait le garde-fou au pire moment.
+    console.warn('[conflict-check] erreur',e&&e.message);
+    window._jlxConflitErr=(e&&e.message)||String(e);
+    return false;
   }
 }
 
@@ -3920,6 +3951,13 @@ async function resetPlanning(){
     Object.keys(sd).forEach(function(pid){ if(isShiftLocked(dk,pid)) garde[pid]=sd[pid]; });
     shifts[dk]=garde;
   });
+  // [2026-11-12 LOT0-C1] On retient que ces mois ont été vidés VOLONTAIREMENT ici : seule cette trace autorise la prochaine
+  // publication à les supprimer du serveur (un mois simplement absent de la copie locale n'est plus jamais supprimé).
+  try{
+    const _vv=_jlxMoisVidesVoulus();
+    dksToReset.forEach(function(dk){ const mk=dk.slice(0,7); if(_vv.indexOf(mk)<0) _vv.push(mk); });
+    _jlxMoisVidesVoulusSet(_vv);
+  }catch(e){ console.warn('[reset] trace des mois réinitialisés :',e&&e.message); }
   try{localStorage.setItem(hospitalKey('planningURG_shifts'),JSON.stringify(shifts));}catch(e){}
   _setLocalEdits(true); // bloquer le resync Supabase jusqu'à la prochaine publication
   render();
@@ -21856,6 +21894,9 @@ function saveConge(){
   }
   indispos.push(Object.assign({id:Date.now()+Math.random(),docId,start,end,type},openEnd?{openEnd:true,label:'Congé long (retour inconnu)'}:{},
     type==='indispo'?{label:'⛔ Indisponible toute la journée'}:{})); // [2026-09-28] saisie manuelle du type strict
+  // [2026-11-12 LOT0-D3] L'absence saisie est enregistrée sur ce poste tout de suite (comme delIndispo et setLeaveReturn). Avant : elle
+  // ne vivait qu'en mémoire jusqu'à « Publier » — perdue au rechargement, et le repère « Publier ● » ne s'allumait pas.
+  try{ lsSet('planningURG_indispos',JSON.stringify(indispos)); }catch(e){}
   closeModal('conge-modal');
   if(currentView==='conges') renderConges();
   render();
@@ -22604,7 +22645,7 @@ async function publishToSupabase(silent=false, sendEmails=false){
     if(_sharedMode==='local') recordSharedStateSync(_cfgNowIso); // ce poste est désormais la référence
   }catch(e){errs.push('Config hôpital : '+e.message);}
 
-  // 2. Publier TOUS les mois de l'année avec leurs shifts (même vides → supprime de Supabase)
+  // 2. Publier les mois de l'année affichée qui ont des postes sur ce poste de travail
   // Détecter les mois ayant des shifts locaux
   const monthsWithShifts=new Set();
   Object.keys(shifts).forEach(dk=>{
@@ -22614,45 +22655,92 @@ async function publishToSupabase(silent=false, sendEmails=false){
     }
   });
 
-  // Supprimer de Supabase les mois de l'année sans shifts locaux
-  const monthsToDelete=[];
-  for(let m=0;m<12;m++){
-    if(!monthsWithShifts.has(m)) monthsToDelete.push(m);
+  // [2026-11-12 LOT0-C1] Un mois VIDE sur ce poste n'est plus supprimé d'office du serveur. Avant, toute copie locale incomplète
+  // (stockage effacé, resynchronisation jamais faite, mois perdu) effaçait les mois manquants chez les médecins. Désormais :
+  //   · vide ici et vide sur le serveur → rien à faire ;
+  //   · vide ici mais rempli sur le serveur → la version du serveur est REPRISE sur ce poste, rien n'est supprimé ;
+  //   · vidé volontairement par « Réinitialiser le planning » → supprimé du serveur après une confirmation qui nomme les mois ;
+  //   · lecture du serveur impossible → aucun mois n'est publié ni supprimé.
+  const _mk=m=>`${cy}-${('0'+(m+1)).slice(-2)}`;
+  const _infos=[]; // remarques affichées en fin de publication (ne sont pas des erreurs)
+  let _srv=null;   // {mois:{n,shifts,locked,published_at}} — état du serveur pour l'année affichée
+  try{
+    const {data:_rows,error:_eRows}=await sbClient.from('planning_months')
+      .select('month,shifts,locked,published_at').eq('hospital_id',hospital).eq('year',cy);
+    if(_eRows) throw _eRows;
+    _srv={};
+    (_rows||[]).forEach(r=>{ _srv[r.month]={n:_jlxCompterCases(r.shifts),shifts:r.shifts||{},locked:Array.isArray(r.locked)?r.locked:[],published_at:r.published_at||null}; });
+  }catch(e){ errs.push('Planning : lecture du serveur impossible — aucun mois publié ni supprimé ('+((e&&e.message)||e)+')'); }
+  let _voulus=_jlxMoisVidesVoulus();
+  let _repris=false;
+  const _reprendre=m=>{ // copie sur ce poste la version serveur d'un mois (postes, verrous, date de publication connue)
+    const s=_srv[m], pre=_mk(m);
+    Object.keys(s.shifts).forEach(dk=>{ if(dk.startsWith(pre)) shifts[dk]=s.shifts[dk]; });
+    if(Array.isArray(lockedShifts)) lockedShifts=lockedShifts.filter(l=>!(l&&typeof l.dk==='string'&&l.dk.startsWith(pre)))
+      .concat(s.locked.filter(l=>l&&typeof l.dk==='string'&&l.dk.startsWith(pre)));
+    _knownPublishedAt[pre]=s.published_at;
+    _repris=true;
+  };
+  const _aSupprimer=[];
+  if(_srv) for(let m=0;m<12;m++){
+    if(monthsWithShifts.has(m)) continue;
+    const s=_srv[m]; if(!s||!s.n) continue;                       // rien sur le serveur non plus
+    if(_voulus.includes(_mk(m))){                                  // vidé volontairement ici
+      if(silent) console.warn('[publish] '+_mk(m)+' : réinitialisé sur ce poste, suppression du serveur laissée à la prochaine publication manuelle');
+      else _aSupprimer.push(m);
+      continue;
+    }
+    _reprendre(m);
+    _infos.push(`${MONTHS[m]} ${cy} : vide sur ce poste mais ${s.n} cases sur le serveur — version du serveur reprise ici, rien n'a été supprimé (pour vider un mois : « Réinitialiser le planning », puis publier)`);
   }
-  if(monthsToDelete.length>0){
-    // Vérifier conflit pour chaque mois avant suppression (un autre onglet
-    // a pu publier ce mois entre-temps — ne pas le supprimer à l'aveugle)
-    const safeToDelete=[];
-    for(const m of monthsToDelete){
-      const okToDelete=await checkMonthConflictBeforeOverwrite(sbClient,hospital,cy,m,MONTHS[m]+' '+cy);
-      if(okToDelete) safeToDelete.push(m);
+  if(_aSupprimer.length){
+    const _liste=_aSupprimer.map(m=>`${MONTHS[m]} ${cy} (${_srv[m].n} cases)`).join(', ');
+    if(confirm('🗑 Vous avez réinitialisé sur ce poste : '+_liste+'.\n\nSupprimer aussi ces mois du serveur ? Les médecins ne les verront plus dans le viewer.\n\nOK = supprimer du serveur\nAnnuler = les garder : la version du serveur est reprise sur ce poste')){
+      const _okSup=[];
+      for(const m of _aSupprimer){
+        if(await checkMonthConflictBeforeOverwrite(sbClient,hospital,cy,m,MONTHS[m]+' '+cy)) _okSup.push(m);
+        else errs.push(`${MONTHS[m]} ${cy} : suppression annulée (${_jlxConflitRaison()})`);
+      }
+      if(_okSup.length){
+        try{
+          const {error}=await sbClient.from('planning_months').delete()
+            .eq('hospital_id',hospital).eq('year',cy).in('month',_okSup);
+          if(error) throw error;
+          _voulus=_voulus.filter(k=>!_okSup.some(m=>_mk(m)===k)); _jlxMoisVidesVoulusSet(_voulus);
+          _okSup.forEach(m=>{ _knownPublishedAt[_mk(m)]=null; });
+        }catch(e){ errs.push('Suppression des mois réinitialisés : '+((e&&e.message)||e)); }
+      }
+    }else{
+      _aSupprimer.forEach(_reprendre);
+      _voulus=_voulus.filter(k=>!_aSupprimer.some(m=>_mk(m)===k)); _jlxMoisVidesVoulusSet(_voulus);
+      _infos.push(_liste+' : gardé(s) sur le serveur, version du serveur reprise sur ce poste');
     }
-    if(safeToDelete.length>0){
-      try{
-        const {error}=await sbClient.from('planning_months')
-          .delete()
-          .eq('hospital_id',hospital)
-          .eq('year',cy)
-          .in('month',safeToDelete);
-        if(error) errs.push(`Suppression mois vides : ${error.message}`);
-      }catch(e){errs.push(`Suppression : ${e.message}`);}
-    }
-    if(safeToDelete.length<monthsToDelete.length){
-      errs.push(`${monthsToDelete.length-safeToDelete.length} mois ignoré(s) (conflit détecté, suppression annulée)`);
-    }
+  }
+  if(_repris){
+    try{ lsSet('planningURG_shifts',JSON.stringify(shifts)); saveLockedShifts(); }catch(e){}
+    try{ if(typeof render==='function') render(); }catch(e){}
   }
 
   // Publier les mois avec shifts
   const ddl=JSON.parse(localStorage.getItem('planningURG_desiderata_deadlines')||'{}');
   for(const m of monthsWithShifts){
     try{
+      if(!_srv) break; // [2026-11-12 LOT0-C1] serveur illisible (déjà signalé) : on ne publie aucun mois à l'aveugle
       const monthLabel=MONTHS[m]+' '+cy;
       const okToOverwrite=await checkMonthConflictBeforeOverwrite(sbClient,hospital,cy,m,monthLabel);
-      if(!okToOverwrite){ errs.push(`${monthLabel} : publication annulée (conflit non confirmé)`); continue; }
+      if(!okToOverwrite){ errs.push(`${monthLabel} : publication annulée (${_jlxConflitRaison()})`); continue; }
       const monthShifts={};
       Object.entries(shifts).forEach(([dk,s])=>{
         if(dk.startsWith(`${cy}-${('0'+(m+1)).slice(-2)}`))monthShifts[dk]=s;
       });
+      // [2026-11-12 LOT0-C1] Forte baisse : ce poste a moins de la moitié des cases du serveur pour ce mois (copie locale
+      // tronquée ?). On demande, sauf si le mois vient d'être réinitialisé volontairement ici.
+      const _nLoc=_jlxCompterCases(monthShifts), _nSrv=(_srv[m]&&_srv[m].n)||0;
+      if(_nSrv>=20&&_nLoc<_nSrv/2&&!_voulus.includes(_mk(m))){
+        if(silent||!confirm(`⚠️ ${monthLabel} : ce poste n'a que ${_nLoc} case(s) remplie(s), contre ${_nSrv} sur le serveur.\n\nSi vous n'avez pas vidé ce mois vous-même, annulez, puis rechargez la page (Ctrl+F5) pour reprendre la version du serveur.\n\nOK = publier quand même ce mois\nAnnuler = ne pas publier ce mois`)){
+          errs.push(`${monthLabel} : NON publié — ${_nLoc} case(s) sur ce poste contre ${_nSrv} sur le serveur`); continue;
+        }
+      }
       const qNum=Math.floor(m/3)+1;
       const nextQNum=qNum>=4?1:qNum+1;
       const deadline=ddl['t'+nextQNum]||null;
@@ -22677,6 +22765,7 @@ async function publishToSupabase(silent=false, sendEmails=false){
       },{onConflict:'hospital_id,year,month'});
       if(error)throw error;
       _knownPublishedAt[`${cy}-${('0'+(m+1)).slice(-2)}`]=nowIso;
+      if(_voulus.includes(_mk(m))){ _voulus=_voulus.filter(k=>k!==_mk(m)); _jlxMoisVidesVoulusSet(_voulus); } // [2026-11-12 LOT0-C1] mois réinitialisé puis republié : trace levée
       ok++;
     }catch(e){errs.push(`${MONTHS[m]} : ${e.message}`);}
   }
@@ -22742,10 +22831,11 @@ async function publishToSupabase(silent=false, sendEmails=false){
       if(_mailRep&&_mailRep.echecs.length){
         alert('⚠ '+_mailRep.echecs.length+' e-mail'+(_mailRep.echecs.length>1?'s':'')+' n\'ont pas pu être envoyé'+(_mailRep.echecs.length>1?'s':'')+' (Gmail a refusé, même après un nouvel essai) :\n\n• '+_mailRep.echecs.join('\n• ')+'\n\nLes autres médecins l\'ont bien reçu. Notez ces noms : le renvoi ne se fait pas automatiquement.');
       }
+      if(_infos.length) alert('ℹ️ Planning publié. À noter :\n\n• '+_infos.join('\n• ')); // [2026-11-12 LOT0-C1]
     }else{
-      alert(`Publication partielle (${ok} OK, ${errs.length} erreur(s)) :\n${errs.join('\n')}`);
+      alert(`Publication partielle (${ok} OK, ${errs.length} erreur(s)) :\n${errs.join('\n')}`+(_infos.length?'\n\nÀ noter :\n• '+_infos.join('\n• '):''));
     }
-  }
+  }else if(_infos.length) console.warn('[publish] '+_infos.join(' | '));
 }
 
 /* ══════════════════════════════════════════
@@ -23545,7 +23635,7 @@ async function loadLogs(){
       return Object.assign({},row,{_docName:doc?(doc.firstname||'')+' '+(doc.lastname||''):row.doctor_id});
     });
     renderLogs();
-  }catch(e){container.innerHTML='<div style="color:var(--err);padding:20px;">⚠ '+e.message+'</div>';}
+  }catch(e){container.innerHTML='<div style="color:var(--err);padding:20px;">⚠ '+escHtml(e&&e.message||e)+'</div>';} // [2026-11-12 LOT0-C2]
 }
 function renderLogs(){
   const container=document.getElementById('logs-content');
@@ -23570,9 +23660,10 @@ function renderLogs(){
     const ic=ICONS[r.action]||'•',co=COLS[r.action]||'var(--t1)';
     t+='<tr style="background:'+bg+';border-bottom:1px solid var(--line2);">';
     t+='<td style="padding:7px 10px;color:var(--t2);white-space:nowrap;">'+ds+'</td>';
-    t+='<td style="padding:7px 10px;font-weight:500;">'+(r._docName||r.doctor_id)+'</td>';
-    t+='<td style="padding:7px 10px;"><span style="color:'+co+';font-weight:600;">'+ic+' '+r.action+'</span></td>';
-    t+='<td style="padding:7px 10px;color:var(--t3);">'+(r.detail||'—')+'</td>';
+    // [2026-11-12 LOT0-C2] Journal d'accès : le détail est un texte envoyé par le viewer du médecin. Tout est affiché comme du texte (jamais comme du HTML).
+    t+='<td style="padding:7px 10px;font-weight:500;">'+escHtml(r._docName||r.doctor_id||'')+'</td>';
+    t+='<td style="padding:7px 10px;"><span style="color:'+co+';font-weight:600;">'+ic+' '+escHtml(r.action||'')+'</span></td>';
+    t+='<td style="padding:7px 10px;color:var(--t3);">'+escHtml(r.detail||'—')+'</td>';
     t+='</tr>';
   });
   t+='</tbody></table>';
