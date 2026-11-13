@@ -7417,8 +7417,9 @@ function rankCandidatesForPost(list, post, dk, ctx){
       // totaux sont proches — miroir de la même correction dans generateAlgo.
       const aTotal=(ctx.yearGardeWE[a.id]||0)+(ctx.docGardeWECount[a.id]||0);
       const bTotal=(ctx.yearGardeWE[b.id]||0)+(ctx.docGardeWECount[b.id]||0);
-      const aWEThisM=ctx.docWEMonth[a.id]||0;
-      const bWEThisM=ctx.docWEMonth[b.id]||0;
+      // [2026-11-11] la doublure de WE (D) déjà tenue ce mois-ci compte comme une garde de WE
+      const aWEThisM=(ctx.docWEMonth[a.id]||0)+0.5*(ctx.docWeDoublMonth[a.id]||0); // une doublure vaut une demi-garde (Dr Sorce, 11/11)
+      const bWEThisM=(ctx.docWEMonth[b.id]||0)+0.5*(ctx.docWeDoublMonth[b.id]||0);
       if(aWEThisM!==bWEThisM) return aWEThisM-bWEThisM;
       // [2026-10-16] Règle molle « pas de WE consécutifs » (miroir de generateAlgo)
       if(WE_FAIRNESS_ON){
@@ -7438,6 +7439,11 @@ function rankCandidatesForPost(list, post, dk, ctx){
       if(aIsRaynal!==bIsRaynal){
         const raynal=aIsRaynal?a:b;
         if((ctx.docWeEMonth[raynal.id]||0)<1) return aIsRaynal?-1:1;
+      }
+      // [2026-11-11] Pas de doublure WE (D) et de poste E (ici le WE-E) le même mois (règle molle)
+      if(DOUBLURE_E_SAME_MONTH_ON){
+        const _aD=(ctx.docWeDoublMonth[a.id]||0)>0, _bD=(ctx.docWeDoublMonth[b.id]||0)>0;
+        if(_aD!==_bD) return _aD?1:-1;
       }
     }
     if(isDoubWE){
@@ -7459,10 +7465,19 @@ function rankCandidatesForPost(list, post, dk, ctx){
         const trimDone=garcetDoubluresTrimestre(gD.id,cy,cm)+(ctx.docWeDoublMonth[gD.id]||0);
         if(trimDone<1) return aIsGarcetD?-1:1;
       }
-      // [2026-10-16] Pas de doublure WE (D) et de 16-00 (E) le même mois (règle molle, miroir de generateAlgo)
+      // [2026-10-16] Pas de doublure WE (D) et de poste E le même mois (règle molle, miroir de generateAlgo)
+      // [2026-11-11] E = 16-00 OU WE-E
       if(DOUBLURE_E_SAME_MONTH_ON){
-        const _aE=(ctx.docPm16Month[a.id]||0)>0, _bE=(ctx.docPm16Month[b.id]||0)>0;
+        const _aE=(ctx.docPm16Month[a.id]||0)>0||(ctx.docWeEMonth[a.id]||0)>0, _bE=(ctx.docPm16Month[b.id]||0)>0||(ctx.docWeEMonth[b.id]||0)>0;
         if(_aE!==_bE) return _aE?1:-1;
+      }
+      // [2026-11-11] La doublure de WE compte comme une garde de WE : d'abord un médecin sans garde de WE ce mois-ci,
+      // puis sans garde de WE (D comprise) le week-end d'avant ou d'après (règle molle)
+      if(WE_FAIRNESS_ON){
+        const _aW=(ctx.docWEMonth[a.id]||0)>0, _bW=(ctx.docWEMonth[b.id]||0)>0;
+        if(_aW!==_bW) return _aW?1:-1;
+        const _aA=docHasAdjacentWeekendGarde(dk,a.id), _bA=docHasAdjacentWeekendGarde(dk,b.id);
+        if(_aA!==_bA) return _aA?1:-1;
       }
       const aNoMois=(ctx.docWeDoublMonth[a.id]||0)===0;
       const bNoMois=(ctx.docWeDoublMonth[b.id]||0)===0;
@@ -11661,13 +11676,13 @@ function fridayGardeGuardOk(R,X,dk,gX){
 function fridayMonthClash(doc,dk,kind){ // kind : 'night' (pose d'une nuit) | 'soir' (pose d'une soirée)
   const y=+dk.slice(0,4), m=+dk.slice(5,7)-1, d2=dim(y,m);
   for(let d=1;d<=d2;d++){ const k=dkey(y,m,d); if(k===dk||dowOf(k)!==5||isHoliday(k)) continue; const sd=shifts[k]; if(!sd) continue;
-    if(sd['coord-n']===doc.id||sd['smur-n']===doc.id||sd['satmu-n']===doc.id) return true;
+    if(sd['coord-n']===doc.id||sd['smur-n']===doc.id||sd['satmu-n']===doc.id||(_FRIDAY_N16_PHASE&&sd['n16']===doc.id)) return true; // [2026-11-11] 16-07 = nuit du vendredi (Dr Sorce) — seulement dans la passe de fin de génération
     if(kind==='night'&&(sd['pm14']===doc.id||sd['pm16']===doc.id)) return true; }
   // [2026-10-21] Vendredis d'affilée, y compris à cheval sur deux mois (dernier vendredi du mois précédent / premier du suivant) :
   // une nuit ne suit ni ne précède une nuit ou une soirée du vendredi voisin (±7 jours) ; une soirée ne suit pas une nuit.
   if(FRIDAY_ADJ_WEEK_ON){
     for(const k of [_adjShiftDk(dk,-7),_adjShiftDk(dk,7)]){ if(isHoliday(k)) continue; const sd=shifts[k]; if(!sd) continue;
-      if(sd['coord-n']===doc.id||sd['smur-n']===doc.id||sd['satmu-n']===doc.id) return true;
+      if(sd['coord-n']===doc.id||sd['smur-n']===doc.id||sd['satmu-n']===doc.id||(_FRIDAY_N16_PHASE&&sd['n16']===doc.id)) return true;
       if(kind==='night'&&(sd['pm14']===doc.id||sd['pm16']===doc.id)) return true; }
   }
   return false;
@@ -11719,9 +11734,14 @@ function _dayPostSwap(dk,pids,X,R){
 // 2e nuit (ou les soirées si une nuit existe) passe à un médecin pleinement éligible (_adelineStrictOk, plafonds du 14-22), sans clash
 // de vendredi ce mois-ci et ayant au plus autant de gardes que le cédant (rapportées au temps de travail). Sans candidat : rien n'est
 // changé (règle molle) et un écart est tracé dans le journal. Jamais sur une case verrouillée ou issue d'un desiderata.
-function fridayDoubleSanitize(months){
+// [2026-11-13] Le 16-07 du vendredi compte comme une nuit (Dr Sorce, 11/11), mais SEULEMENT dans cette passe de fin de génération :
+// contrôlé à la pose, il faisait perdre environ 3 chaînages jour → nuit sur le T1 (essai au banc, même hasard). fridayMonthClash ne le compte
+// que pendant cette passe (_FRIDAY_N16_PHASE).
+let _FRIDAY_N16_PHASE=false;
+function fridayDoubleSanitize(months){ _FRIDAY_N16_PHASE=true; try{ return _fridayDoubleSanitizeCore(months); } finally{ _FRIDAY_N16_PHASE=false; } }
+function _fridayDoubleSanitizeCore(months){
   const done=[]; if(!FRIDAY_NO_DOUBLE_ON||!months||!months.length) return done;
-  const NIGHTS=['coord-n','smur-n','satmu-n'], SOIR=['pm14','pm16'];
+  const NIGHTS=['coord-n','smur-n','satmu-n','n16'], SOIR=['pm14','pm16']; // [2026-11-11] le 16-07 du vendredi compte comme une nuit (Dr Sorce)
   const nm=id=>{ const d=docs.find(x=>x.id===id); return d?d.lastname:('#'+id); };
   months.forEach(([y,m])=>{
     const d2=dim(y,m); const fris=[]; for(let d=1;d<=d2;d++){ const k=dkey(y,m,d); if(dowOf(k)===5&&!isHoliday(k)) fris.push(k); }
@@ -12006,7 +12026,7 @@ function assistantSmurNEnsure(months){
         return b;
       };
       let best=findBest(false), relaxed=false;
-      if(!best&&GARDE_SPACING_48H_FALLBACK_ON){ best=findBest(true); relaxed=!!best; }
+      if(!best&&_GARDE_SPACING_48H_BALANCE){ best=findBest(true); relaxed=!!best; } // [2026-11-11] 48 h réservé aux trous
       // Un assistant SMUR ok ne chaîne PAS B puis la nuit (il n'a ni A, ni B, ni COORD dans ses postes) : son smur-n est une nuit SEULE,
       // et il doit être libre ce jour-là et le lendemain (repos). Or il tient presque un poste chaque jour ouvré. Dernier recours :
       // il cède son (ou ses 2) poste(s) ordinaire(s) du jour et du lendemain à des médecins pleinement éligibles, puis prend la nuit
@@ -12033,7 +12053,7 @@ function assistantSmurNEnsure(months){
           clear.forEach(c=>{ shifts[c.dk][c.pid]=doc.id; });      // toujours rétabli : l'application est faite plus bas
           return zs;
         };
-        for(const rx of (GARDE_SPACING_48H_FALLBACK_ON?[false,true]:[false])){
+        for(const rx of (_GARDE_SPACING_48H_BALANCE?[false,true]:[false])){
           let plan=null;
           days.forEach(dk=>{
             const Y=(shifts[dk]||{})['smur-n']; if(Y==null||Y===doc.id) return;
@@ -12323,14 +12343,17 @@ function assistantFloorSanitize(months){
 // (repos, indispos, espacement des gardes, plafonds). Sans candidat valable, rien n'est changé.
 // ───────────────────────────────────────────────────────────────────────────────────────────────────────
 const _WE_GARDE_ALL=['we-coord','we-satmu','we-smur-sat','we-smur-sun'];
+// [2026-11-11] Décision du Dr Sorce : la doublure de WE (D) COMPTE comme une garde de WE pour « 1 WE par mois » et
+// « pas de WE consécutifs ». Seules les gardes (_WE_GARDE_ALL) sont déplacées par les passes de nivellement ; D est seulement COMPTÉE.
+const _WE_COUNT_ALL=_WE_GARDE_ALL.concat(['we-doublure']);
 const _NIGHT_DAY_PARTNER={'coord-n':'coord','smur-n':'b','satmu-n':'a'}; // chaînage jour → nuit (coord→coord-n, A→satmu-n, B→smur-n)
-// Le médecin tient-il une autre garde de WE sur le week-end d'avant (dir=-1), d'après (dir=1) ou l'un des deux ?
+// Le médecin tient-il une autre garde de WE (doublure D comprise) sur le week-end d'avant (dir=-1), d'après (dir=1) ou l'un des deux ?
 // « Consécutif » = 5 à 9 jours d'écart, mois voisins compris (ex. Lu 31/01 → 06/02, Bouziane 27/02 → 06/03).
 function docHasAdjacentWeekendGarde(dk,docId,dir){
   if(docId==null) return false;
   for(let off=5;off<=9;off++){
-    if(dir!==1){ const s=shifts[_adjShiftDk(dk,-off)]; if(s&&_WE_GARDE_ALL.some(p=>s[p]===docId)) return true; }
-    if(dir!==-1){ const s=shifts[_adjShiftDk(dk,off)]; if(s&&_WE_GARDE_ALL.some(p=>s[p]===docId)) return true; }
+    if(dir!==1){ const s=shifts[_adjShiftDk(dk,-off)]; if(s&&_WE_COUNT_ALL.some(p=>s[p]===docId)) return true; }
+    if(dir!==-1){ const s=shifts[_adjShiftDk(dk,off)]; if(s&&_WE_COUNT_ALL.some(p=>s[p]===docId)) return true; }
   }
   return false;
 }
@@ -12373,8 +12396,8 @@ function _adelineStrictOk(alt,pid,dk,okSpecial,relax48){ return _adelineReason(a
 function _weNearDay(id,dk){
   return [-1,1].some(o=>{ const s=shifts[_adjShiftDk(dk,o)]; return !!s&&Object.entries(s).some(([p,v])=>v===id&&/^we-/.test(p)); });
 }
-function _monthWEGardes(id,mp){
-  let n=0; Object.keys(shifts).forEach(k=>{ if(k.startsWith(mp)){ const s=shifts[k]; if(s&&_WE_GARDE_ALL.some(p=>s[p]===id)) n++; } });
+function _monthWEGardes(id,mp){ // [2026-11-11] doublure de WE (D) comprise (voir _WE_COUNT_ALL)
+  let n=0; Object.keys(shifts).forEach(k=>{ if(k.startsWith(mp)){ const s=shifts[k]; if(s) _WE_COUNT_ALL.forEach(p=>{ if(s[p]===id) n+=(p==='we-doublure'?0.5:1); }); } }); // une doublure vaut une demi-garde (Dr Sorce, 11/11)
   return n;
 }
 // (1) Pas de garde de WE sur deux week-ends consécutifs, puis (2) une garde de WE par mois nivelée : un PH à 2 gardes de WE
@@ -12391,7 +12414,7 @@ function weekendFairnessSanitize(months){
   // 72 h d'abord ; en dernier recours espacement de secours à 48 h (décision du Dr Sorce, 17/10)
   const pick=(sl,xCount)=>{
     const mp=sl.dk.slice(0,7);
-    for(const relax of (GARDE_SPACING_48H_FALLBACK_ON?[false,true]:[false])){
+    for(const relax of (_GARDE_SPACING_48H_BALANCE?[false,true]:[false])){
       const pool=phs.filter(R=>R.id!==sl.id&&_monthWEGardes(R.id,mp)<xCount&&_adelineStrictOk(R,sl.pid,sl.dk,false,relax)
         &&!docHasAdjacentWeekendGarde(sl.dk,R.id)&&!_weNearDay(R.id,sl.dk));
       pool.sort((a,b)=>_monthWEGardes(a.id,mp)-_monthWEGardes(b.id,mp)||yearWE(a.id,sl.dk.slice(0,4))-yearWE(b.id,sl.dk.slice(0,4)));
@@ -12471,7 +12494,10 @@ function weekendFairnessSanitize(months){
   }
   return done;
 }
-// (3) Pas de doublure WE (D) et de 16-00 (E) le même mois pour un même médecin : on remplace d'abord le 16-00, sinon la doublure.
+// (3) Pas de doublure WE (D) et de poste E le même mois pour un même médecin : on remplace d'abord le E, sinon la doublure.
+// [2026-11-11] E = 16-00 en semaine ET WE-E le week-end (lettre E de la grille d'Adeline, cf. export « Horaire superviseurs ») ;
+// la version du 16/10 ne regardait que le 16-00.
+const _E_POSTS=['pm16','we-e'];
 function doublureEPm16Sanitize(months){
   const done=[];
   if(!DOUBLURE_E_SAME_MONTH_ON||!months||!months.length) return done;
@@ -12482,27 +12508,31 @@ function doublureEPm16Sanitize(months){
     const keys=Object.keys(shifts).filter(k=>k.startsWith(mp)).sort();
     const holders=pid=>{ const o={}; keys.forEach(k=>{ const v=(shifts[k]||{})[pid]; if(v!=null) (o[v]=o[v]||[]).push(k); }); return o; };
     const hasIn=(id,pid)=>keys.some(k=>(shifts[k]||{})[pid]===id);
+    const hasE=id=>_E_POSTS.some(p=>hasIn(id,p));
+    const eCount=(id,pid,dk)=>pid==='pm16'?pm16CountInMonth(id,dk):keys.filter(k=>(shifts[k]||{})[pid]===id).length;
     Object.keys(holders('we-doublure')).forEach(idS=>{
       const id=Number(idS);
-      if(!hasIn(id,'pm16')||!hasIn(id,'we-doublure')) return;
-      const X=docs.find(d=>d.id===id);
-      // 1) remplacer son 16-00 par un médecin sans doublure ce mois-ci (de préférence sans 16-00 non plus)
-      for(const dk of keys.filter(k=>(shifts[k]||{})['pm16']===id)){
-        if(_adelineProtected(dk,'pm16',id)) continue;
-        const cands=pool0.filter(R=>R.id!==id&&!hasIn(R.id,'we-doublure')&&_adelineStrictOk(R,'pm16',dk))
-          .sort((a,b)=>pm16CountInMonth(a.id,dk)-pm16CountInMonth(b.id,dk));
-        if(!cands.length) continue;
-        shifts[dk]['pm16']=cands[0].id;
-        done.push({type:'doublure-vs-pm16',dk,pid:'pm16',de:nm(id),a:cands[0].lastname});
-        return;
+      if(!hasE(id)||!hasIn(id,'we-doublure')) return;
+      // 1) remplacer ses postes E (16-00, WE-E) par un médecin sans doublure ce mois-ci (de préférence avec moins de ce poste)
+      let resteE=false;
+      for(const pid of _E_POSTS){
+        for(const dk of keys.filter(k=>(shifts[k]||{})[pid]===id)){
+          if(_adelineProtected(dk,pid,id)){ resteE=true; continue; }
+          const cands=pool0.filter(R=>R.id!==id&&!hasIn(R.id,'we-doublure')&&(pid!=='we-e'||!_weNearDay(R.id,dk))&&_adelineStrictOk(R,pid,dk))
+            .sort((a,b)=>eCount(a.id,pid,dk)-eCount(b.id,pid,dk));
+          if(!cands.length){ resteE=true; continue; }
+          shifts[dk][pid]=cands[0].id;
+          done.push({type:'doublure-vs-E',dk,pid,de:nm(id),a:cands[0].lastname});
+        }
       }
-      // 2) sinon remplacer sa doublure par un médecin sans 16-00 ce mois-ci
+      if(!resteE) return;
+      // 2) sinon remplacer sa doublure par un médecin sans poste E ce mois-ci
       for(const dk of keys.filter(k=>(shifts[k]||{})['we-doublure']===id)){
         if(_adelineProtected(dk,'we-doublure',id)) continue;
-        const cands=pool0.filter(R=>R.id!==id&&!hasIn(R.id,'pm16')&&!hasIn(R.id,'we-doublure')&&!_weNearDay(R.id,dk)&&_adelineStrictOk(R,'we-doublure',dk));
+        const cands=pool0.filter(R=>R.id!==id&&!hasE(R.id)&&!hasIn(R.id,'we-doublure')&&!_weNearDay(R.id,dk)&&_adelineStrictOk(R,'we-doublure',dk));
         if(!cands.length) continue;
         shifts[dk]['we-doublure']=cands[0].id;
-        done.push({type:'doublure-vs-pm16',dk,pid:'we-doublure',de:nm(id),a:cands[0].lastname});
+        done.push({type:'doublure-vs-E',dk,pid:'we-doublure',de:nm(id),a:cands[0].lastname});
         return;
       }
     });
@@ -12511,7 +12541,7 @@ function doublureEPm16Sanitize(months){
     console.log('🔁 doublureEPm16Sanitize : '+done.length+' poste(s) déplacé(s) (D et E le même mois).',done);
     window._btViolations=window._btViolations||[];
     done.forEach(r=>window._btViolations.push({dk:r.dk,postId:r.pid,docId:null,docName:r.a,type:r.type,
-      detail:r.pid+' du '+r.dk+' : '+r.de+' → '+r.a+' (doublure WE et 16-00 le même mois)'}));
+      detail:r.pid+' du '+r.dk+' : '+r.de+' → '+r.a+' (doublure WE et poste E — 16-00 ou WE-E — le même mois)'}));
   }
   return done;
 }
@@ -12577,7 +12607,7 @@ function phGardeFloorSanitize(months){
         const _noteMotif=(pids,dk,rx)=>{ for(const p of pids){ const r=_adelineReason(R,p,dk,false,rx); if(r){ motifs[r]=(motifs[r]||0)+1; return; } } };
         // 1er essai avec l'espacement normal de 72 h ; si aucune garde ne peut être cédée, 2e essai avec l'espacement de secours de 48 h
         // (décision du Dr Sorce, 17/10 : « si nécessaire pour que les gardes soient mieux réparties »).
-        for(const relax of (GARDE_SPACING_48H_FALLBACK_ON?[false,true]:[false])){
+        for(const relax of (_GARDE_SPACING_48H_BALANCE?[false,true]:[false])){
         if(did) break;
         if(relax){ Object.keys(why).forEach(k=>{ why[k]=0; }); Object.keys(motifs).forEach(k=>{ delete motifs[k]; }); }
         for(const c of cands){
@@ -12753,7 +12783,7 @@ function finalHoleFill(months){
       posts.filter(p=>p.imperatif&&!p.optional&&postActiveOnDay(p,dk)).forEach(p=>{
         if((shifts[dk]||{})[p.id]) return;
         const repos=computeRepos(dk);
-        const _pool=docs.filter(doc=>
+        const _poolOf=()=>docs.filter(doc=>
           doc.allowedPosts.includes(p.id)&&
           isInContract(doc,dk)&&
           !doc.specialCase&&
@@ -12770,6 +12800,13 @@ function finalHoleFill(months){
           underWeekGardeHardCap(doc,p.id,dk)&&
           !docOverMonthCap(doc,p.id,dk)
         );
+        let _pool=_poolOf(), _relax48=false;
+        // [2026-11-11] Décision du Dr Sorce : 72 h strictes ; le repli à 48 h n'est permis QUE pour éviter un trou — ici,
+        // seulement si personne ne peut tenir le poste avec 72 h d'écart.
+        if(!_pool.length&&GARDE_SPACING_48H_FALLBACK_ON){
+          _gardeSpacingRelaxed=true; try{ _pool=_poolOf(); } finally{ _gardeSpacingRelaxed=false; }
+          _relax48=_pool.length>0;
+        }
         // [2026-08-06] Doublure WE : cette passe ignorait l'espacement (1/fenêtre) et le
         // plafond annuel — c'est ELLE qui produisait les dépassements que canPlace refusait
         // désormais correctement (constaté 06/08 : FOAMKOM 5 doublures pour un plafond de 4).
@@ -12790,8 +12827,8 @@ function finalHoleFill(months){
         filled.push({dk,pid:p.id,docName:cand.firstname+' '+cand.lastname});
         window._btViolations=window._btViolations||[];
         window._btViolations.push({dk,postId:p.id,docId:cand.id,docName:cand.firstname+' '+cand.lastname,
-          type:'final-hole-fill',
-          detail:`${p.id} du ${dk} encore vide en fin de génération — comblé par ${cand.firstname} ${cand.lastname} (candidat pleinement vérifié)`});
+          type:_relax48?'final-hole-fill-48h':'final-hole-fill',
+          detail:`${p.id} du ${dk} encore vide en fin de génération — comblé par ${cand.firstname} ${cand.lastname} `+(_relax48?'(espacement de secours à 48 h : aucun candidat à 72 h, plutôt qu’un trou)':'(candidat pleinement vérifié)')});
       });
     }
   });
@@ -18041,7 +18078,7 @@ function generateAlgo(ptargets, genYear, genMonth){
         }
         // [2026-10-21] Équilibre des nuits du vendredi (règle molle, voir fridayNightFilter)
         if(!we&&dowOf(dk)===5){
-          const _fNight=['coord','a','b'].includes(post.id)?post.chain:(['coord-n','smur-n','satmu-n'].includes(post.id)?post.id:null);
+          const _fNight=['coord','a','b'].includes(post.id)?post.chain:(['coord-n','smur-n','satmu-n'].includes(post.id)?post.id:null); // [2026-11-13] le 16-07 n'est plus contrôlé à la pose (coûtait ~3 chaînages) : voir fridayDoubleSanitize
           const _fPrefHere=d=>indispos.some(i=>i.docId===d.id&&i.type==='pref'&&i.start===dk&&prefMatchesPost(i.posteId,post.id));
           // [2026-10-21] Pas deux nuits de vendredi / nuit + soirée de vendredi dans le même mois (règle molle)
           if(_fNight) eligible=fridayClashFilter(eligible,dk,'night',_fPrefHere);
@@ -18374,8 +18411,9 @@ function generateAlgo(ptargets, genYear, genMonth){
             const aTotal=(yearGardeWE[a.id]||0)+(docGardeWECount[a.id]||0);
             const bTotal=(yearGardeWE[b.id]||0)+(docGardeWECount[b.id]||0);
             // Priorité mensuelle : médecin avec le moins de gardes WE ce mois passe en premier
-            const aWEThisM=docWEMonth[a.id]||0;
-            const bWEThisM=docWEMonth[b.id]||0;
+            // [2026-11-11] la doublure de WE (D) déjà tenue ce mois-ci compte comme une garde de WE
+            const aWEThisM=(docWEMonth[a.id]||0)+0.5*(docWeDoublMonth[a.id]||0); // une doublure vaut une demi-garde (Dr Sorce, 11/11)
+            const bWEThisM=(docWEMonth[b.id]||0)+0.5*(docWeDoublMonth[b.id]||0);
             if(aWEThisM!==bWEThisM) return aWEThisM-bWEThisM;
             // [2026-10-16] Règle MOLLE (remarque d'Adeline) : pas de garde de WE sur deux week-ends consécutifs, y compris
             // d'un mois à l'autre (Lu 31/01 → 06/02, Bouziane 27/02 → 06/03). Placée APRÈS le quota mensuel : elle départage
@@ -18401,6 +18439,11 @@ function generateAlgo(ptargets, genYear, genMonth){
               const raynal=aIsRaynal?a:b;
               if((docWeEMonth[raynal.id]||0)<1) return aIsRaynal?-1:1;
             }
+            // [2026-11-11] Pas de doublure WE (D) et de poste E (ici le WE-E) le même mois — règle molle
+            if(DOUBLURE_E_SAME_MONTH_ON){
+              const _aD=(docWeDoublMonth[a.id]||0)>0, _bD=(docWeDoublMonth[b.id]||0)>0;
+              if(_aD!==_bD) return _aD?1:-1;
+            }
           }
           // (équilibre JF géré en priorité haute — voir plus haut)
           // we-doublure: Biémar prioritaire, Winkin prioritaire, puis ratio annuel
@@ -18424,10 +18467,19 @@ function generateAlgo(ptargets, genYear, genMonth){
               const trimDone=garcetDoubluresTrimestre(gD.id,cy,cm)+(docWeDoublMonth[gD.id]||0);
               if(trimDone<1) return aIsGarcetD?-1:1;
             }
-            // [2026-10-16] Pas de doublure WE (D) et de 16-00 (E) le même mois — règle molle (remarque d'Adeline)
+            // [2026-10-16] Pas de doublure WE (D) et de poste E le même mois — règle molle (remarque d'Adeline)
+            // [2026-11-11] E = 16-00 OU WE-E
             if(DOUBLURE_E_SAME_MONTH_ON){
-              const _aE=(docPm16Month[a.id]||0)>0, _bE=(docPm16Month[b.id]||0)>0;
+              const _aE=(docPm16Month[a.id]||0)>0||(docWeEMonth[a.id]||0)>0, _bE=(docPm16Month[b.id]||0)>0||(docWeEMonth[b.id]||0)>0;
               if(_aE!==_bE) return _aE?1:-1;
+            }
+            // [2026-11-11] La doublure de WE compte comme une garde de WE : d'abord un médecin sans garde de WE ce mois-ci,
+            // puis sans garde de WE (D comprise) le week-end d'avant ou d'après (règle molle)
+            if(WE_FAIRNESS_ON){
+              const _aW=(docWEMonth[a.id]||0)>0, _bW=(docWEMonth[b.id]||0)>0;
+              if(_aW!==_bW) return _aW?1:-1;
+              const _aA=docHasAdjacentWeekendGarde(dk,a.id), _bA=docHasAdjacentWeekendGarde(dk,b.id);
+              if(_aA!==_bA) return _aA?1:-1;
             }
             // Priorité 1 : médecin sans we-doublure ce mois
             const aNoMois=(docWeDoublMonth[a.id]||0)===0;
@@ -19772,15 +19824,21 @@ const CATCHUP_POSTS = ['u3-2','u3-3','u3-4','u3-5','c','d','smur-j','satmu-j','p
 // exactement au comportement précédent (copie : backup_julandrex_citadelle_20261016_avant_regles_adeline.html).
 //  - WE_FAIRNESS_ON : pas de garde de WE sur deux week-ends consécutifs (mois voisins compris) ; une garde de WE
 //    par mois et par PH nivelée (un PH à 2 cède une garde à un PH à 0, éventuellement contre sa doublure D).
-//  - DOUBLURE_E_SAME_MONTH_ON : pas de doublure WE (D) et de 16-00 (E) le même mois pour un même médecin.
+//  - DOUBLURE_E_SAME_MONTH_ON : pas de doublure WE (D) et de poste E le même mois pour un même médecin
+//    ([2026-11-11] E = 16-00 en semaine ET WE-E le week-end, lettre E de la grille d'Adeline).
 //  - PH_GARDE_FLOOR_ON : équilibre mensuel des gardes (nuits + WE) des PH : personne n'obtient 4 gardes si un PH
 //    pleinement éligible en a moins de 3 (sauf congé / absence prolongée).
 const WE_FAIRNESS_ON = true;
 const DOUBLURE_E_SAME_MONTH_ON = true;
 const PH_GARDE_FLOOR_ON = true;
 //  - GARDE_SPACING_48H_FALLBACK_ON : décision du Dr Sorce (17/10) — l'espacement de 72 h entre gardes peut être ramené à 48 h SI
-//    NÉCESSAIRE pour mieux répartir les gardes : essayé en dernier recours seulement, dans les passes de fin de génération.
+//    NÉCESSAIRE : essayé en dernier recours seulement, dans les passes de fin de génération.
+//  - GARDE_SPACING_48H_HOLES_ONLY : [2026-11-11] précision du Dr Sorce — « 72 h strictes ; le repli à 48 h n'est permis que pour
+//    éviter les trous ». Vrai : les passes d'ÉQUILIBRAGE (WE nivelés, plancher PH, SMUR-N des assistants) restent à 72 h, et
+//    seul le comblement des postes encore vides en fin de génération (finalHoleFill) peut descendre à 48 h.
 const GARDE_SPACING_48H_FALLBACK_ON = true;
+const GARDE_SPACING_48H_HOLES_ONLY = true;
+const _GARDE_SPACING_48H_BALANCE = GARDE_SPACING_48H_FALLBACK_ON&&!GARDE_SPACING_48H_HOLES_ONLY; // repli autorisé dans les passes d'équilibrage ?
 let _gardeSpacingRelaxed = false;   // vrai seulement pendant un essai de secours à 48 h (toujours remis à faux après)
 const WEEKS_WORKED_PER_YEAR   = 43.5; // PH/seniors : 1740h pour 40h/sem
 const ANNUAL_TARGET_FLAT_DOC_IDS = new Set([74,100]); // SCAFF, CACCIATORE : année pleine = cible sans dates (voir annualTarget)
