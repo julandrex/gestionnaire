@@ -6590,6 +6590,117 @@ function renderStats(){
 /* ══════════════════════════════════════════
    CONFLICTS
 ══════════════════════════════════════════ */
+// ── [2026-11-15 D1-CONTROLE] Contrôle des règles avant publication (lecture seule) ──────────────────────────────────────────────
+// Audit du 11/11/2026, point D1. Avant : rien ne revérifiait les règles au moment de publier ; une affectation forcée à la main,
+// un congé saisi après la génération ou un échange appliqué pouvaient envoyer chez les médecins un médecin posté pendant un congé,
+// sans repos ou sur deux postes, sans aucune alerte.
+// Maintenant : « Publier » relit le planning de l'année affichée, À PARTIR D'AUJOURD'HUI (les jours passés ne sont pas contrôlés),
+// et montre la liste des anomalies. Le gestionnaire choisit : corriger d'abord, ou publier quand même. Les anomalies acceptées
+// sont retenues sur cet ordinateur et ne sont plus redemandées ; elles restent visibles dans l'onglet Alertes.
+// LECTURE SEULE : aucune case, aucune fiche, aucune règle du moteur n'est modifiée. Les tests sont ceux du moteur lui-même
+// (isInContract, hardIndispoBlocks, constraintsBlock, unavailDowBlocks, hasUnavailPost, computeRepos, paires de postes compatibles).
+// Non contrôlé ici : les postes vides et les souhaits (déjà dans l'onglet Alertes), l'espacement des gardes (repli à 48 h toléré).
+// Publications silencieuses et hôpitaux en « mode fiches » : pas de contrôle. Retour arrière : CTRL_AVANT_PUBLICATION_ON=false.
+const CTRL_AVANT_PUBLICATION_ON=true;
+const CTRL_TITRES={inconnu:'Médecin inconnu',absence:'Posté pendant une absence ou une indisponibilité',contrat:'Hors contrat',nonAutorise:'Poste non autorisé dans la fiche',
+  ferme:'Poste fermé ce jour-là',interdit:'Poste interdit par une règle de fiche',refuse:'Poste refusé dans les desiderata',
+  jourIndispo:'Jour indisponible non respecté',double:'Double affectation',repos:'Repos non respecté'};
+function _ctrlPaireLegitime(doc,p1,p2){
+  if(LEGIT_COMBO_PAIRS.has(p1+','+p2)||LEGIT_COMBO_PAIRS.has(p2+','+p1)) return true;
+  try{ return docGetRules(doc,'linked_post').some(function(r){ return (r.triggerPost===p1&&r.linkedPost===p2)||(r.triggerPost===p2&&r.linkedPost===p1); }); }
+  catch(e){ return false; }
+}
+// Relit `shifts` entre deux jours compris ('AAAA-MM-JJ' ; null = sans borne) et renvoie la liste des anomalies
+// [{code,titre,dk,pid,docId,texte}]. Ne modifie rien.
+function controlerPlanning(dkDebut,dkFin){
+  const out=[];
+  const nomPoste=function(pid){ const p=getPost(pid); return p?(p.name||pid):pid; };
+  const essai=function(f){ try{ return !!f(); }catch(e){ return false; } };
+  Object.keys(shifts).sort().forEach(function(dk){
+    if((dkDebut&&dk<dkDebut)||(dkFin&&dk>dkFin)) return;
+    const day=shifts[dk]||{}, parMed={}; let repos=null;
+    Object.keys(day).forEach(function(pid){ const id=day[pid]; if(id==null||id==='') return; (parMed[id]=parMed[id]||[]).push(pid); });
+    Object.keys(parMed).forEach(function(k){
+      const pids=parMed[k], id=day[pids[0]], doc=docs.find(function(x){ return x.id==id; });
+      const qui=doc?((doc.firstname||'')+' '+(doc.lastname||'')).trim():('médecin n° '+id);
+      const aj=function(code,pid,detail){ out.push({code:code,titre:CTRL_TITRES[code],dk:dk,pid:pid,docId:id,
+        texte:qui+' — '+formatDate(dk)+' ('+nomPoste(pid)+')'+(detail?' : '+detail:'')}); };
+      if(!doc){ pids.forEach(function(pid){ aj('inconnu',pid,'fiche introuvable'); }); return; }
+      for(let i=0;i<pids.length;i++) for(let j=i+1;j<pids.length;j++)
+        if(!_ctrlPaireLegitime(doc,pids[i],pids[j])) aj('double',pids[j],'en même temps que '+nomPoste(pids[i]));
+      pids.forEach(function(pid){
+        const post=getPost(pid);
+        if(!isInContract(doc,dk)) aj('contrat',pid,(doc.contractEnd&&dk>doc.contractEnd)?'contrat terminé le '+formatDate(doc.contractEnd):'contrat commençant le '+formatDate(doc.contractStart));
+        else if(essai(function(){ return gardeFinitHorsContrat(doc,pid,dk); })) aj('contrat',pid,'garde de nuit finissant après la fin du contrat');
+        if(!post){ aj('ferme',pid,'poste inconnu'); return; }
+        if(essai(function(){ return !postActiveOnDay(post,dk); })) aj('ferme',pid,'');
+        if(!(doc.allowedPosts||[]).includes(pid)) aj('nonAutorise',pid,'');
+        if(essai(function(){ return hardIndispoBlocks(doc,pid,dk); })){
+          const l=indispos.filter(function(i){ return i.docId===doc.id&&dk>=i.start&&dk<=(i.end||i.start)&&i.type!=='pref'&&i.type!=='unavail_post'; });
+          if(l.length) aj('absence',pid,l.map(function(i){ return TYPE_LABEL[i.type]||i.type; }).filter(function(x,n,a){ return a.indexOf(x)===n; }).join(', '));
+        }
+        if(essai(function(){ return constraintsBlock(doc,pid,dk); })) aj('interdit',pid,'');
+        if(essai(function(){ return hasUnavailPost(doc.id,pid,dk); })) aj('refuse',pid,'');
+        if(essai(function(){ return unavailDowBlocks(doc,pid,dk); })) aj('jourIndispo',pid,'');
+        if(repos===null){ try{ repos=computeRepos(dk); }catch(e){ repos=new Set(); } }
+        if(repos.has(doc.id)) aj('repos',pid,'en repos après une garde');
+      });
+    });
+  });
+  return out;
+}
+function _ctrlCle(a){ return a.code+'|'+a.dk+'|'+a.pid+'|'+a.docId; }
+function _ctrlVus(){ try{ const a=JSON.parse(lsGet('planningURG_ctrlPublicationVus')||'[]'); return Array.isArray(a)?a:[]; }catch(e){ return []; } }
+function _ctrlVusSet(a){ try{ lsSet('planningURG_ctrlPublicationVus',JSON.stringify(a||[])); }catch(e){} }
+function _ctrlAujourdhui(){ const n=new Date(); return n.getFullYear()+'-'+('0'+(n.getMonth()+1)).slice(-2)+'-'+('0'+n.getDate()).slice(-2); }
+// Fenêtre de décision. Résout true (publier quand même) ou false (annuler pour corriger).
+function _ctrlDemander(nouvelles,dejaVues){
+  return new Promise(function(resolve){
+    const old=document.getElementById('ctrl-publication-overlay'); if(old) old.remove();
+    const groupes={}; nouvelles.forEach(function(a){ (groupes[a.titre]=groupes[a.titre]||[]).push(a); });
+    const MAXL=80; let n=0, html='';
+    Object.keys(groupes).forEach(function(t){
+      html+='<div style="font-size:13px;font-weight:700;color:var(--err);margin:12px 0 4px;">'+escHtml(t)+' ('+groupes[t].length+')</div>';
+      groupes[t].forEach(function(a){ if(n>=MAXL) return; n++; html+='<div style="font-size:12px;color:var(--t1);padding:2px 0 2px 10px;">• '+escHtml(a.texte)+'</div>'; });
+    });
+    if(nouvelles.length>n) html+='<div style="font-size:12px;color:var(--t3);margin-top:8px;">… et '+(nouvelles.length-n)+' autre(s) : voir l\'onglet Alertes, mois par mois.</div>';
+    const overlay=document.createElement('div');
+    overlay.id='ctrl-publication-overlay';
+    overlay.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.72);z-index:10001;display:flex;align-items:center;justify-content:center;padding:16px;';
+    overlay.innerHTML='<div style="background:var(--bg1);border:1px solid var(--line2);border-radius:14px;padding:24px 28px;max-width:640px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.5);max-height:92vh;display:flex;flex-direction:column;">'
+      +'<div style="font-size:17px;font-weight:800;margin-bottom:6px;">⚠️ '+nouvelles.length+' anomalie'+(nouvelles.length>1?'s':'')+' de règle avant publication</div>'
+      +'<div style="font-size:12px;color:var(--t3);">Contrôle du planning à partir d\'aujourd\'hui. Rien n\'a été publié. Rien n\'est corrigé automatiquement : à vous de décider.</div>'
+      +'<div style="overflow:auto;margin-top:6px;flex:1;min-height:60px;">'+html+'</div>'
+      +(dejaVues?'<div style="font-size:12px;color:var(--t3);margin-top:10px;">'+dejaVues+' autre(s) anomalie(s) déjà acceptée(s) lors d\'une publication précédente ne sont pas réaffichées (elles restent dans l\'onglet Alertes).</div>':'')
+      +'<div style="display:flex;gap:10px;margin-top:18px;justify-content:flex-end;flex-wrap:wrap;">'
+      +'<button id="ctrl-pub-forcer" style="background:var(--bg2);color:var(--t1);border:1px solid var(--line2);border-radius:9px;padding:11px 16px;font-size:13px;cursor:pointer;">Publier quand même</button>'
+      +'<button id="ctrl-pub-annuler" style="background:var(--accent);color:#fff;border:none;border-radius:9px;padding:11px 18px;font-size:14px;font-weight:700;cursor:pointer;">Annuler et corriger</button>'
+      +'</div></div>';
+    document.body.appendChild(overlay);
+    const fin=function(v){ try{ overlay.remove(); }catch(e){} resolve(v); };
+    document.getElementById('ctrl-pub-annuler').onclick=function(){ fin(false); };
+    document.getElementById('ctrl-pub-forcer').onclick=function(){ fin(true); };
+  });
+}
+// Appelé par « Publier » (publication non silencieuse). Renvoie true s'il faut poursuivre la publication.
+async function controleAvantPublication(){
+  if(!CTRL_AVANT_PUBLICATION_ON) return true;
+  const auj=_ctrlAujourdhui(), debut=(cy+'-01-01')>auj?(cy+'-01-01'):auj, fin=cy+'-12-31';
+  const tout=controlerPlanning(debut,fin);
+  window._ctrlDernier={quand:new Date().toISOString(),debut:debut,fin:fin,total:tout.length,nouvelles:0}; // trace du dernier contrôle
+  if(!tout.length) return true;
+  const vus=new Set(_ctrlVus());
+  const nouvelles=tout.filter(function(a){ return !vus.has(_ctrlCle(a)); });
+  window._ctrlDernier.nouvelles=nouvelles.length;
+  if(!nouvelles.length){ console.log('[contrôle avant publication] '+tout.length+' anomalie(s), toutes déjà acceptées lors d\'une publication précédente'); return true; }
+  const ok=await _ctrlDemander(nouvelles,tout.length-nouvelles.length);
+  if(ok){ // retenir ce qui vient d'être accepté ; oublier les jours passés
+    const garde=_ctrlVus().filter(function(k){ return String(k).split('|')[1]>=auj; });
+    _ctrlVusSet(garde.concat(tout.map(_ctrlCle)).filter(function(x,n,a){ return a.indexOf(x)===n; }));
+  }
+  return ok;
+}
+// (Placé AVANT getAllConflicts : celle-ci est appelée dès le démarrage, les constantes ci-dessous doivent déjà exister.)
 function getAllConflicts(){
   const result=[];
   const d2=dim(cy,cm);
@@ -6695,6 +6806,13 @@ function getAllConflicts(){
         result.push({type:'err',title:'Hors contrat',desc:`${d.firstname} ${d.lastname} — ${formatDate(dk)} (garde de nuit finissant après la fin du contrat)`});
     }
   });
+  // [2026-11-15 D1-CONTROLE] Anomalies que cet onglet ne signalait pas (médecin posté pendant une absence, poste non autorisé,
+  // fermé, interdit, refusé, médecin inconnu) : mêmes contrôles que ceux faits avant la publication, pour le mois affiché.
+  if(CTRL_AVANT_PUBLICATION_ON){
+    try{ controlerPlanning(dkey(cy,cm,1),dkey(cy,cm,d2n)).forEach(a=>{
+      if(['inconnu','absence','nonAutorise','ferme','interdit','refuse'].includes(a.code)) result.push({type:'err',title:a.titre,desc:a.texte}); }); }
+    catch(e){ console.warn('[contrôle des règles] onglet Alertes :',e); }
+  }
   for(let d=1;d<=d2n;d++){
     const dk=dkey(cy,cm,d);
     if(isWE(dk)) continue;
@@ -22634,7 +22752,14 @@ ${myCongs.length?`<table><thead><tr><th>Type</th><th>Période</th><th></th><th>N
 /* ══════════════════════════════════════════
    PUBLIER VERS SUPABASE (VIEWER)
 ══════════════════════════════════════════ */
-function openPublishDialog(){
+function openPublishDialog(_apresControle){
+  // [2026-11-15 D1-CONTROLE] Le contrôle des règles passe AVANT le choix « notifier / sans notifier » (et avant la saisie du
+  // message aux médecins). publishToSupabase le refait par sécurité : ce qui vient d'être accepté n'y est pas redemandé.
+  if(_apresControle!==true&&CTRL_AVANT_PUBLICATION_ON&&!_jlxModeFiches()){
+    controleAvantPublication().then(function(ok){ if(ok) openPublishDialog(true); else showToast('Publication annulée : rien n\'a été publié.',4000); })
+      .catch(function(e){ console.warn('[contrôle avant publication] erreur :',e); openPublishDialog(true); });
+    return;
+  }
   // Compter les médecins avec email
   const nbEmail=docs.filter(d=>d.email&&d.email.trim()).length;
   const nbTotal=docs.filter(d=>d.active!==false).length;
@@ -22815,6 +22940,13 @@ async function publishToSupabase(silent=false, sendEmails=false){
 
   const hospital=currentHospitalId;
   let ok=0,errs=[];
+
+  // [2026-11-15 D1-CONTROLE] Avant toute écriture : contrôle des règles, en lecture seule. Une panne du contrôle n'empêche pas
+  // de publier : elle est signalée dans le bilan de la publication.
+  if(!silent){
+    try{ if(!(await controleAvantPublication())){ showToast('Publication annulée : rien n\'a été publié.',4000); return; } }
+    catch(e){ console.warn('[contrôle avant publication] erreur :',e); errs.push('Contrôle des règles avant publication NON effectué ('+((e&&e.message)||e)+')'); }
+  }
 
   // [2026-09-11] ÉTAT PARTAGÉ — garde 1 : ne jamais publier avant d'avoir lu la version
   // serveur dans cette session. Sur un poste vierge, publier avant la resync enverrait des
