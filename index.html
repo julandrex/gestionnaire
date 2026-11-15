@@ -12376,6 +12376,8 @@ function _adelineReason(alt,pid,dk,okSpecial,relax48){
   if(Object.values(shifts[dk]||{}).includes(alt.id)) return 'déjà un poste ce jour';
   if(computeRepos(dk).has(alt.id)) return 'repos après une garde';
   if(hardIndispoBlocks(alt,pid,dk)) return 'congé / absence / indispo';
+  // [2026-11-14 GARDE-VEILLE-ABSENCE] à éviter ; tolérée seulement pendant un repli (comme l'espacement à 48 h), pour éviter un poste vide
+  if(GARDE_VEILLE_ABSENCE_ON&&!_gardeSpacingRelaxed&&gardeVeilleAbsence(alt,pid,dk)) return 'garde la veille d\'une absence';
   if(unavailDowBlocks(alt,pid,dk)) return 'jour de la semaine indisponible';
   if(constraintsBlock(alt,pid,dk)) return 'règle de fiche (poste interdit)';
   if(gardeSpacingBlocks(alt,pid,dk)) return 'espacement de 72 h entre gardes';
@@ -12392,6 +12394,59 @@ function _adelineReason(alt,pid,dk,okSpecial,relax48){
   return null;
 }
 function _adelineStrictOk(alt,pid,dk,okSpecial,relax48){ return _adelineReason(alt,pid,dk,okSpecial,relax48)===null; }
+// ── [2026-11-14 GARDE-VEILLE-ABSENCE] Garde de nuit la veille d'une absence datée ────────────────────────────────────────────────
+// Décision du Dr Sorce (14/11/2026) : une garde qui se termine le matin du premier jour d'une absence (congé, formation, absence…)
+// est TOLÉRÉE MAIS À ÉVITER, comme le repli de l'espacement à 48 h : le moteur cherche d'abord un autre médecin ; il ne la laisse
+// que faute de remplaçant, et le signale alors dans le journal des écarts.
+// Avant : la règle n'existait que dans isAvail (fenêtre d'affectation manuelle, inchangée : le médecin y reste « forçable »). Trois
+// passes posaient ces gardes sans la connaître (gardes de week-end, 16-07, SMUR de nuit des assistants) et rien ne le signalait
+// (relevé par les tests du lot 2 : lot2_tests_moteur_20261114).
+// Deux effets : (1) _adelineReason refuse ces gardes en mode normal et les tolère pendant un repli (ci-dessus) ; (2) la passe de fin
+// de génération ci-dessous redistribue celles que les passes précédentes ont posées. Retour arrière : GARDE_VEILLE_ABSENCE_ON=false.
+const GARDE_VEILLE_ABSENCE_ON=true;
+function gardeVeilleAbsence(doc,pid,dk){
+  const post=getPost(pid); if(!doc||!post||!post.overnight) return false;
+  const nk=_adjShiftDk(dk,1);
+  return indispos.some(i=>i.docId===doc.id&&nk>=i.start&&nk<=i.end&&i.type!=='pref'&&i.type!=='unavail_post'); // même test que isAvail
+}
+function gardeVeilleAbsenceSanitize(months){
+  const done=[], gardees=[]; if(!GARDE_VEILLE_ABSENCE_ON||!months||!months.length) return {done,gardees};
+  const nm=id=>{ const d=docs.find(x=>x.id===id); return d?d.lastname:('#'+id); };
+  window._btViolations=window._btViolations||[];
+  const tolerer=(dk,pid,X,pourquoi)=>{ gardees.push({dk,pid,doc:X.lastname,pourquoi});
+    window._btViolations.push({dk,postId:pid,docId:X.id,docName:X.firstname+' '+X.lastname,type:'garde-veille-absence-toleree',
+      detail:pid+' du '+dk+' : '+X.lastname+' garde ce poste alors qu\'il/elle est absent(e) le lendemain — '+pourquoi+' (toléré, à vérifier)'}); };
+  months.forEach(([y,m])=>{
+    const d2=dim(y,m);
+    for(let d=1;d<=d2;d++){
+      const dk=dkey(y,m,d), day=shifts[dk]; if(!day) continue;
+      posts.filter(p=>p.overnight).forEach(post=>{
+        const pid=post.id, id=day[pid]; if(id==null) return;
+        const X=docs.find(x=>x.id===id); if(!X||!gardeVeilleAbsence(X,pid,dk)) return;
+        const dp=_NIGHT_DAY_PARTNER[pid];
+        const pids=(dp&&day[dp]===id)?[dp,pid]:[pid];           // nuit enchaînée : le poste de jour suit la nuit
+        if(pids.some(p=>_adelineProtected(dk,p,id))){ tolerer(dk,pid,X,'poste verrouillé, issu d\'un desiderata ou prioritaire'); return; }
+        if(nightHeldByRule(X,pid,dk)){ tolerer(dk,pid,X,'nuit tenue par une règle de sa fiche'); return; }
+        // le remplaçant doit encore être sous contrat le lendemain matin (sinon on remplacerait un débordement par un autre)
+        const base=R=>R.id!==id&&R.active!==false&&isInContract(R,_adjShiftDk(dk,1))&&!(pids.length===2&&docAdjacentSameGroup(dk,pids[0],R.id));
+        // 1) médecin libre ce jour-là et pleinement éligible ; 2) à défaut, échange contre son poste de jour
+        pids.forEach(p=>{ delete day[p]; });
+        let pool=[]; try{ pool=docs.filter(R=>base(R)&&pids.every(p=>_adelineStrictOk(R,p,dk))).map(R=>({R,swap:null})); } finally{ pids.forEach(p=>{ day[p]=id; }); }
+        if(!pool.length) pool=docs.filter(base).map(R=>({R,swap:_dayPostSwap(dk,pids,X,R)})).filter(c=>c.swap);
+        pool.sort((a,b)=>gardeMonthLoad(a.R,dk)-gardeMonthLoad(b.R,dk));
+        const best=pool[0];
+        if(!best){ tolerer(dk,pid,X,'aucun remplaçant pleinement éligible'); return; }
+        if(best.swap) day[best.swap]=id;
+        pids.forEach(p=>{ day[p]=best.R.id; });
+        done.push({dk,pid:pids.join('+'),de:X.lastname,a:best.R.lastname,contre:best.swap||undefined});
+        window._btViolations.push({dk,postId:pid,docId:best.R.id,docName:best.R.firstname+' '+best.R.lastname,type:'garde-veille-absence',
+          detail:pids.join('+')+' du '+dk+' : '+nm(id)+' → '+best.R.lastname+(best.swap?' (qui lui cède son '+best.swap+')':'')+' ('+nm(id)+' est absent(e) le lendemain)'});
+      });
+    }
+  });
+  if(done.length||gardees.length) console.log('🌙 gardeVeilleAbsenceSanitize : '+done.length+' garde(s) redistribuée(s), '+gardees.length+' tolérée(s) faute de remplaçant.',done,gardees);
+  return {done,gardees};
+}
 // Le médecin tient-il un poste de week-end (we-*) la veille ou le lendemain de ce jour ? (garde + doublure le même WE : interdit)
 function _weNearDay(id,dk){
   return [-1,1].some(o=>{ const s=shifts[_adjShiftDk(dk,o)]; return !!s&&Object.entries(s).some(([p,v])=>v===id&&/^we-/.test(p)); });
@@ -13562,6 +13617,8 @@ async function confirmGenerate(){
     try{ R.pm16Double=pm16DoubleSanitize(months); }catch(e){ console.warn('pm16DoubleSanitize error:',e); }
     // [2026-10-17] Dernier filet du poste 14-22 (non impératif, donc absent de finalHoleFill) : 2 trous en T1 2027 (22/03, 24/03).
     try{ R.pm14Fill=pm14HoleFill(months); }catch(e){ console.warn('pm14HoleFill error:',e); }
+    // [2026-11-14 GARDE-VEILLE-ABSENCE] Après toutes les passes qui posent des gardes : redistribuer celles qui débordent sur une absence
+    try{ R.gardeVeilleAbsence=gardeVeilleAbsenceSanitize(months); }catch(e){ console.warn('gardeVeilleAbsenceSanitize error:',e); }
     // [2026-09-23] Filet de sécurité : une passe qui ignorerait encore les verrous ne doit pas pouvoir
     // changer un poste verrouillé. On le rétablit et on le signale (console + compteur du tirage).
     R.lockRestored=[];
