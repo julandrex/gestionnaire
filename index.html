@@ -1998,6 +1998,7 @@ document.addEventListener('DOMContentLoaded',function(){
         <option value="forbid_post_alt_weeks">Poste exclu 1 semaine sur 2</option>
         <option value="priority_post_date">Poste prioritaire sur une période (ex: « ok » fêtes)</option>
         <option value="garde_quota_delta">Moins de gardes par mois (−N, ex: Steckx, Degesves)</option>
+        <option value="we_half_day_month">Demi-garde WE de jour N×/mois (12 h, ex: Biémar COORD-WE)</option>
       </select>
     </div>
     <div id="rw-params" style="margin-top:8px;"></div>
@@ -9030,6 +9031,7 @@ const RULE_TYPES = {
   FORBID_POST_ALT_WEEKS:  'forbid_post_alt_weeks',
   PRIORITY_POST_DATE:     'priority_post_date',
   GARDE_QUOTA_DELTA:      'garde_quota_delta',
+  WE_HALF_DAY_MONTH:      'we_half_day_month', // [2026-11-15 DEMI-GARDE-WE]
 };
 
 const RULE_LABELS = {
@@ -9056,6 +9058,7 @@ const RULE_LABELS = {
   forbid_post_alt_weeks:  'Poste exclu 1 sem./2',
   priority_post_date:     'Poste prioritaire (période)',
   garde_quota_delta:      'Moins de gardes /mois',
+  we_half_day_month:      'Demi-garde WE de jour /mois',
 };
 
 const RULE_DESCS = {
@@ -9082,6 +9085,7 @@ const RULE_DESCS = {
   forbid_post_alt_weeks:  'Ce médecin est exclu du/des poste(s) sélectionné(s) une semaine sur deux à partir d\'une date de départ, en commençant par la première semaine (celle qui contient la date). Exclusion dure. Ex : parent en garde alternée d\'un enfant une semaine sur deux.',
   priority_post_date:     'Ce médecin reçoit EN PRIORITÉ UN des postes sélectionnés, UNE SEULE fois sur la période choisie (date de début → date de fin, vide = 1 jour), placé AVANT le reste de la génération. Quotas, repos et espacement 72h sont ignorés pour ce placement ; mais il respecte un congé/une absence réels et ne double-affecte pas. Si le médecin tient DÉJÀ un des postes demandés dans la période (ex: poste verrouillé pré-encodé), la règle est considérée SATISFAITE et rien n\'est ajouté. Ex : « ok » — médecin volontaire / à son tour pour UNE garde de fête (24/12, 31/12…).',
   garde_quota_delta:      'Ce médecin reçoit N gardes de moins par mois que ce que prévoit son contrat (quota de nuits de semaine −N, poids des nuits dans le tri, et comptage « −N » dans le plancher mensuel des gardes des PH : à 4 gardes −N il en cède une). Ex : −1 pour Steckx et Degesves. Ce n\'est pas un plafond dur : le moteur peut dépasser si un poste obligatoire reste vide.',
+  we_half_day_month:      'Ce médecin tient N fois par mois la PREMIÈRE moitié (12 h de jour par défaut, 9 h → 21 h) d’une garde de week-end des postes cochés, même s’il n’y est pas autorisé pour une garde entière. La suite (jusqu’au lendemain 9 h) est tenue par un médecin qui, hors de ce poste, a au plus une garde de WE dans le mois (une doublure seule ou une garde) ; ceux qui ont déjà une garde + une doublure ou deux gardes de WE sont exclus. Pas de WE consécutifs. Chaque moitié compte pour 0,5 garde de WE. Posée en fin de génération comme un poste partagé (scindé), refaite à chaque génération.',
 };
 
 // Postes exemptés de la règle only_24h (les "gardes 24h" elles-mêmes : chaînage
@@ -9242,6 +9246,16 @@ function renderRuleParams(existing) {
     <input id="rw-exc-hours" type="number" min="0" max="24" step="0.5" value="${rule && rule.hours!=null ? rule.hours : 9}">
     <label>Nombre par mois</label>
     <input id="rw-count" type="number" min="1" max="23" value="${rule ? rule.count||1 : 1}">`;
+  }
+  else if (type === 'we_half_day_month') { // [2026-11-15 DEMI-GARDE-WE]
+    const selPosts = (rule && rule.posts) ? rule.posts : ['we-coord'];
+    const wePosts = posts.filter(p => ['we-coord','we-satmu','we-smur-sat','we-smur-sun'].includes(p.id));
+    html += `<label>Poste(s) de week-end pouvant être scindé(s)</label>
+    <div class="cbgroup" id="rw-posts">${wePosts.map(p => `<label class="cbitem${selPosts.includes(p.id) ? ' ck' : ''}"><input type="checkbox" value="${p.id}"${selPosts.includes(p.id) ? ' checked' : ''} style="accent-color:${p.color};" onchange="this.closest('.cbitem').classList.toggle('ck',this.checked)"><span style="color:${p.color};">${p.full}</span></label>`).join('')}</div>
+    <label>Nombre de demi-gardes par mois</label>
+    <input id="rw-count" type="number" min="1" max="4" value="${rule ? (rule.count||1) : 1}">
+    <label>Durée de la demi-garde de jour (heures, à partir de 9 h)</label>
+    <input id="rw-hours" type="number" min="4" max="20" step="0.5" value="${rule && rule.hours ? rule.hours : 12}">`;
   }
   else if (type === 'max_gardes_per_month') {
     html += `<label>Nombre maximum de gardes par mois (nuits de semaine, gardes de week-end et 16 h – 7 h comptées ensemble)</label>
@@ -9420,6 +9434,14 @@ function saveAdvancedRule() {
     rule.count = getNum('rw-count') || 1;
     rule.label = `${rule.excLabel} ${rule.hours} h — ${rule.count}×/mois`;
     if (!rule.excLabel) { alert('Indiquez le nom du poste exceptionnel.'); return; }
+  }
+  else if (type === 'we_half_day_month') { // [2026-11-15 DEMI-GARDE-WE]
+    rule.posts = getPosts('rw-posts').filter(p => ['we-coord','we-satmu','we-smur-sat','we-smur-sun'].includes(p));
+    rule.count = getNum('rw-count') || 1;
+    const _hh = parseFloat(document.getElementById('rw-hours')?.value);
+    rule.hours = (isNaN(_hh) || _hh <= 0 || _hh >= 24) ? 12 : _hh;
+    rule.label = `demi-garde WE de jour ${rule.hours} h — ${rule.posts.join(', ')} — ${rule.count}×/mois`;
+    if (!rule.posts.length) { alert('Cochez au moins un poste de week-end.'); return; }
   }
   else if (type === 'max_gardes_per_month') {
     const _g = getNum('rw-count');
@@ -12371,11 +12393,20 @@ const _WE_COUNT_ALL=_WE_GARDE_ALL.concat(['we-doublure']);
 const _NIGHT_DAY_PARTNER={'coord-n':'coord','smur-n':'b','satmu-n':'a'}; // chaînage jour → nuit (coord→coord-n, A→satmu-n, B→smur-n)
 // Le médecin tient-il une autre garde de WE (doublure D comprise) sur le week-end d'avant (dir=-1), d'après (dir=1) ou l'un des deux ?
 // « Consécutif » = 5 à 9 jours d'écart, mois voisins compris (ex. Lu 31/01 → 06/02, Bouziane 27/02 → 06/03).
+// [2026-11-15 DEMI-GARDE-WE] Part d'un poste de WE tenue par un médecin : poste entier = 1 (doublure D = 0,5) ; poste SCINDÉ
+// (demi-garde) = la moitié pour chacun des deux titulaires ; poste DOUBLÉ = la totalité pour chacun. 0 si le médecin n'y est pas.
+function _weShareOf(dk,pid,id){
+  const s=shifts[dk]; if(!s||id==null) return 0;
+  const base=(pid==='we-doublure'?0.5:1), sh=sharedOn(dk,pid);
+  if(s[pid]===id) return (sh&&sh.mode!=='double')?base/2:base;
+  if(sh&&sh.docId2===id) return sh.mode==='double'?base:base/2;
+  return 0;
+}
 function docHasAdjacentWeekendGarde(dk,docId,dir){
   if(docId==null) return false;
   for(let off=5;off<=9;off++){
-    if(dir!==1){ const s=shifts[_adjShiftDk(dk,-off)]; if(s&&_WE_COUNT_ALL.some(p=>s[p]===docId)) return true; }
-    if(dir!==-1){ const s=shifts[_adjShiftDk(dk,off)]; if(s&&_WE_COUNT_ALL.some(p=>s[p]===docId)) return true; }
+    if(dir!==1){ const k=_adjShiftDk(dk,-off); if(shifts[k]&&_WE_COUNT_ALL.some(p=>_weShareOf(k,p,docId)>0)) return true; } // [2026-11-15 DEMI-GARDE-WE] second titulaire compris
+    if(dir!==-1){ const k=_adjShiftDk(dk,off); if(shifts[k]&&_WE_COUNT_ALL.some(p=>_weShareOf(k,p,docId)>0)) return true; }
   }
   return false;
 }
@@ -12533,11 +12564,86 @@ function gardeDernierJourContratSanitize(months){
 }
 // Le médecin tient-il un poste de week-end (we-*) la veille ou le lendemain de ce jour ? (garde + doublure le même WE : interdit)
 function _weNearDay(id,dk){
-  return [-1,1].some(o=>{ const s=shifts[_adjShiftDk(dk,o)]; return !!s&&Object.entries(s).some(([p,v])=>v===id&&/^we-/.test(p)); });
+  return [-1,1].some(o=>{ const k=_adjShiftDk(dk,o), s=shifts[k]; return !!s&&Object.entries(s).some(([p,v])=>/^we-/.test(p)&&(v===id||(sharedOn(k,p)||{}).docId2===id)); }); // [2026-11-15 DEMI-GARDE-WE] second titulaire compris
 }
 function _monthWEGardes(id,mp){ // [2026-11-11] doublure de WE (D) comprise (voir _WE_COUNT_ALL)
-  let n=0; Object.keys(shifts).forEach(k=>{ if(k.startsWith(mp)){ const s=shifts[k]; if(s) _WE_COUNT_ALL.forEach(p=>{ if(s[p]===id) n+=(p==='we-doublure'?0.5:1); }); } }); // une doublure vaut une demi-garde (Dr Sorce, 11/11)
+  let n=0; Object.keys(shifts).forEach(k=>{ if(k.startsWith(mp)){ const s=shifts[k]; if(s) _WE_COUNT_ALL.forEach(p=>{ n+=_weShareOf(k,p,id); }); } }); // [2026-11-15 DEMI-GARDE-WE] demi-garde = 0,5 pour chacun
+ // une doublure vaut une demi-garde (Dr Sorce, 11/11)
   return n;
+}
+// ── [2026-11-15 DEMI-GARDE-WE] Règle de fiche « Demi-garde WE de jour /mois » (we_half_day_month) ──────────────────────
+// Décision du Dr Sorce (15/11/2026). Un médecin portant la règle (ex. BIÉMAR : COORD-WE, 1×/mois) tient la PREMIÈRE moitié
+// d'une garde de WE (9 h → 9 h + N h, 12 h par défaut) ; la seconde moitié (jusqu'au lendemain 9 h) est tenue par un médecin
+// qui, HORS de ce poste, a au plus UNE garde de WE dans le mois (une doublure D seule, ou exactement une garde) : sont exclus
+// ceux qui ont déjà une garde + une doublure, ou deux gardes de WE. Pas de WE consécutifs, ni pour l'un ni pour l'autre.
+// Chaque moitié compte pour 0,5 garde de WE (_weShareOf). La demi-garde est un POSTE PARTAGÉ en mode « scinder » (titulaire =
+// la demi-garde de jour, second = la nuit), marqué auto:'demi-garde-we' : contrairement à un partage manuel, il n'est PAS
+// verrouillé et chaque génération le refait (demiGardeWEClear au début, demiGardeWEPass sur le tirage retenu, après le polissage).
+// Le poste n'a pas besoin d'être dans les postes autorisés du médecin : la règle l'ouvre pour la demi-garde seulement.
+const DEMI_GARDE_WE_ON=true;            // retour arrière : false
+const _DEMI_GARDE_AUTO='demi-garde-we';
+function demiGardeWEClear(keys){        // retire les demi-gardes posées par une génération précédente (le second reprend la garde entière)
+  let n=0;
+  (keys||[]).forEach(dk=>{ const d=sharedShifts[dk]; if(!d) return;
+    Object.keys(d).forEach(pid=>{ const sh=d[pid]; if(!sh||sh.auto!==_DEMI_GARDE_AUTO||isShiftLocked(dk,pid)) return;
+      if(shifts[dk]&&sh.docId2!=null) shifts[dk][pid]=sh.docId2;
+      delete d[pid]; n++; });
+    if(!Object.keys(d).length) delete sharedShifts[dk]; });
+  return n;
+}
+// Le médecin de la règle peut-il tenir la demi-garde de jour de `pid` le `dk` ? (motif de refus ou null)
+function _demiJourReason(B,pid,dk){
+  if(!isInContract(B,dk)) return 'hors contrat';
+  if(indispos.some(i=>i.docId===B.id&&dk>=i.start&&dk<=i.end&&i.type!=='pref'&&i.type!=='unavail_post')) return 'absent';
+  if(indispos.some(i=>i.docId===B.id&&i.type==='unavail_post'&&dk>=i.start&&dk<=i.end&&prefMatchesPost(i.posteId,pid))) return 'indispo de poste';
+  if(isUnavailDow(B,dk)) return 'indisponibilité récurrente';
+  if(docWorksOn(dk,B.id)) return 'déjà un poste ce jour';
+  if(computeRepos(dk).has(B.id)) return 'repos';
+  if(docWorksOn(_adjShiftDk(dk,1),B.id)) return 'poste le lendemain (repos)';
+  if(typeof gardeSpacingBlocks==='function'&&gardeSpacingBlocks(B,pid,dk)) return 'moins de 72 h d\'une autre garde';
+  if(docHasAdjacentWeekendGarde(dk,B.id)||_weNearDay(B.id,dk)) return 'WE consécutifs';
+  return null;
+}
+function demiGardeWEPass(months,keys){
+  const done=[]; if(!DEMI_GARDE_WE_ON||!months||!months.length) return done;
+  const today=new Date().toLocaleDateString('sv-SE',{timeZone:'Europe/Brussels'});
+  const nm=id=>{ const d=docs.find(x=>x.id===id); return d?d.lastname:('#'+id); };
+  docs.filter(B=>B.active!==false).forEach(B=>{
+    (B.rules||[]).filter(r=>r&&r.type==='we_half_day_month'&&r.active!==false).forEach(r=>{
+      const pids=(r.posts||[]).filter(p=>_WE_GARDE_ALL.includes(p)); if(!pids.length) return;
+      const want=Math.max(0,r.count!=null?+r.count:1), hh=(+r.hours>0&&+r.hours<24)?+r.hours:12;
+      months.forEach(([y,m])=>{
+        const mp=y+'-'+pad(m+1), mk=(keys||[]).filter(k=>k.startsWith(mp));
+        let have=mk.filter(dk=>pids.some(p=>(shifts[dk]||{})[p]===B.id&&(sharedOn(dk,p)||{}).mode==='split')).length;
+        while(have<want){
+          let best=null;
+          mk.forEach(dk=>{ if(dk<today) return; pids.forEach(p=>{
+            const H=(shifts[dk]||{})[p]; if(H==null||H===B.id) return;
+            if(_adelineProtected(dk,p,H)) return;                              // verrou, souhait, priorité, poste déjà partagé
+            if(_demiJourReason(B,p,dk)) return;
+            // second = d'abord le médecin déjà en place (aucun WE ajouté pour lui), s'il a au plus 1 garde de WE hors de ce poste
+            const loadH=_monthWEGardes(H,mp)-1;
+            if(loadH<=1){ const sc=-loadH; if(!best||sc<best.sc) best={dk,p,H,second:H,sc}; return; }
+            // sinon un autre médecin pleinement éligible à la garde, au plus 1 garde de WE ce mois-ci, sans WE voisin
+            docs.forEach(R=>{ if(R.active===false||R.id===B.id||R.id===H) return;
+              if(!(R.allowedPosts||[]).includes(p)) return;
+              const l=_monthWEGardes(R.id,mp); if(l>1) return;
+              if(docHasAdjacentWeekendGarde(dk,R.id)||_weNearDay(R.id,dk)) return;
+              if(!_adelineStrictOk(R,p,dk)) return;
+              const sc=100+l; if(!best||sc<best.sc) best={dk,p,H,second:R.id,sc}; });
+          }); });
+          if(!best){ done.push({type:'demi-garde-we-impossible',detail:B.lastname+' — '+mp+' : aucune demi-garde de WE possible ('+pids.join(', ')+'), '+have+'/'+want}); break; }
+          const tot=postHours(getPost(best.p),best.dk)||24;
+          shifts[best.dk][best.p]=B.id;
+          if(!sharedShifts[best.dk]) sharedShifts[best.dk]={};
+          sharedShifts[best.dk][best.p]={docId2:best.second,mode:'split',h1:hh,h2:Math.max(0,Math.round((tot-hh)*100)/100),auto:_DEMI_GARDE_AUTO};
+          done.push({type:'demi-garde-we',detail:best.dk+' '+best.p+' : '+B.lastname+' '+hh+' h de jour, '+nm(best.second)+' la suite'+(best.second===best.H?'':' (au lieu de '+nm(best.H)+')')});
+          have++;
+        }
+      });
+    });
+  });
+  return done;
 }
 // (1) Pas de garde de WE sur deux week-ends consécutifs, puis (2) une garde de WE par mois nivelée : un PH à 2 gardes de WE
 // dans le mois en cède une à un PH éligible à 0 (même s'il tient déjà une doublure D : elle lui reste, le cédant n'en reprend pas).
@@ -13736,6 +13842,8 @@ async function confirmGenerate(){
   // seed, donc leurs résultats sont valides d'une tentative à l'autre. Retirés juste après la
   // boucle pour que l'interface retrouve un calcul non mémoïsé (aucune valeur périmée possible).
   window._genCaches={wd:{},gqm:{}};
+  // [2026-11-15 DEMI-GARDE-WE] les demi-gardes automatiques de la génération précédente sont retirées (jours à venir, hors verrou) : refaites sur le tirage retenu
+  try{ demiGardeWEClear(_scopeKeys.filter(dk=>dk>=_todayDk)); }catch(e){ console.warn('demiGardeWEClear error:',e); }
   let _best=null;
   let _holidayRescued=[], _doublureSmurNRescued=[], _reposViolationResult={rescued:[],unresolved:[]}, _rebalanceSwaps=[], _doubleBookingsFixed=[], _finalHoleFilled=[];
   const _assign=RR=>{ _holidayRescued=RR.holiday; _doublureSmurNRescued=RR.doublureSmur; _reposViolationResult=RR.repos; _rebalanceSwaps=RR.rebalance; _doubleBookingsFixed=RR.doubles; _finalHoleFilled=RR.finalFill; };
@@ -13760,6 +13868,8 @@ async function confirmGenerate(){
   _restoreSnap(_best.snap); _assign(_best.R); window._genRunSeed=_best.seed;
   window._btViolations=_best.bt||[];
   try{ window.__polishStats=await _polish(); }catch(e){ console.warn('[POLISH]',e); }   // [2026-08-19] cf. ci-dessus : aligner le rapport sur le tirage RETENU
+  // [2026-11-15 DEMI-GARDE-WE] demi-gardes de WE de jour (règle de fiche), une seule fois, sur le tirage retenu ; consignées dans le journal des écarts
+  try{ const _dg=demiGardeWEPass(months,_scopeKeys); window.__demiGardeWE=_dg; if(_dg.length){ window._btViolations=(window._btViolations||[]).concat(_dg); console.log('[DEMI-GARDE-WE]',_dg); } }catch(e){ console.warn('demiGardeWEPass error:',e); }
   persistGenerationJournal(months,_best.seed); // [2026-10-21] journal conservé après rechargement et d'un mois à l'autre
   const _chosenClean=_best.hard===0;
   console.log('%c[AUTO-SEED] '+(_best.hard?'⚠️':'✅')+' retenu : seed '+_best.seed+' — correction:'+_best.hard+(_best.hard?' ['+_best.probs.map(p=>p.code+':'+p.n).join(', ')+']':'')+' | qualité:'+_best.soft.total+' (charge:'+_best.soft.b+' gardesWE:'+_best.soft.c+' fêtes:'+_best.soft.f+' vendredis/gardes:'+(_best.soft.g||0)+')','font-weight:bold;color:'+(_best.hard?'#ef4444':'#22c55e'));
