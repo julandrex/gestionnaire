@@ -4205,6 +4205,20 @@ function isInContract(doc, dk){
   if(doc.contractEnd&&dk>doc.contractEnd) return false;
   return true;
 }
+// ── [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT] Pas de garde de nuit le dernier jour d'un contrat ───────────────────────────────────
+// Décision du Dr Sorce (15/11/2026) : une garde de nuit posée le dernier jour d'un contrat se termine le lendemain matin, hors
+// contrat → INTERDITE (règle ferme, pas un simple « à éviter » : faute de remplaçant, le poste reste vide et il est signalé).
+// Appliquée : dans la fenêtre d'affectation (isAvail, pickEligibility, pickDoc : non forçable, comme le hors-contrat), dans
+// _adelineReason (passes de fin de génération, amélioration progressive), dans l'onglet Alertes, et par la passe de fin de
+// génération gardeDernierJourContratSanitize (les passes qui posent les gardes ne connaissent que le jour même).
+// Retour arrière : GARDE_DERNIER_JOUR_CONTRAT_ON=false.
+const GARDE_DERNIER_JOUR_CONTRAT_ON=true;
+function gardeFinitHorsContrat(doc,pid,dk){
+  if(!GARDE_DERNIER_JOUR_CONTRAT_ON||!doc||!doc.contractEnd) return false;
+  const post=getPost(pid); if(!post||!post.overnight) return false;
+  const d=new Date(dk+'T12:00:00'); d.setDate(d.getDate()+1);
+  return d.toISOString().slice(0,10)>String(doc.contractEnd).slice(0,10);
+}
 
 function isPhNoGardes(doc){
   if(doc.role!=='PH Urgences'&&doc.role!=='PH SMUR') return false;
@@ -4632,6 +4646,7 @@ function isAvail(docId, dk, pid){
   if(!post) return false;
   if(!postActiveOnDay(post,dk)) return false;
   if(!doc.allowedPosts.includes(pid)) return false;
+  if(gardeFinitHorsContrat(doc,pid,dk)) return false; // [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT]
   if(indispos.some(i=>i.docId===docId&&dk>=i.start&&dk<=i.end&&i.type!=='pref'&&i.type!=='unavail_post')) return false;
   if(indispos.some(i=>i.docId===docId&&i.type==='unavail_post'&&dk>=i.start&&dk<=i.end&&prefMatchesPost(i.posteId,pid))) return false;
   if(computeRepos(dk).has(docId)) return false;
@@ -6675,6 +6690,8 @@ function getAllConflicts(){
       const outAfter=d.contractEnd&&dk>d.contractEnd;
       if(outBefore||outAfter)
         result.push({type:'err',title:'Hors contrat',desc:`${d.firstname} ${d.lastname} — ${formatDate(dk)}`});
+      else if(Object.entries(shifts[dk]||{}).some(([p,v])=>v===d.id&&gardeFinitHorsContrat(d,p,dk))) // [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT]
+        result.push({type:'err',title:'Hors contrat',desc:`${d.firstname} ${d.lastname} — ${formatDate(dk)} (garde de nuit finissant après la fin du contrat)`});
     }
   });
   for(let d=1;d<=d2n;d++){
@@ -7645,9 +7662,10 @@ function pickEligibility(doc,dk,pid,rs){
   let reason='', reasonCode='';
   const isN16=pid==='n16';
   // Hors contrat : bloqué pour tout médecin ayant des dates de contrat renseignées
-  const outOfContract=(doc.contractStart||doc.contractEnd)&&(
-    (doc.contractStart&&dk<doc.contractStart)||(doc.contractEnd&&dk>doc.contractEnd));
-  if(outOfContract){ reason='Hors contrat'; reasonCode='out_of_contract'; }
+  const _gardeHC=gardeFinitHorsContrat(doc,pid,dk); // [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT] garde de nuit le dernier jour du contrat : non forçable
+  const outOfContract=((doc.contractStart||doc.contractEnd)&&(
+    (doc.contractStart&&dk<doc.contractStart)||(doc.contractEnd&&dk>doc.contractEnd)))||_gardeHC;
+  if(outOfContract){ reason=_gardeHC?'Garde finissant après la fin du contrat':'Hors contrat'; reasonCode='out_of_contract'; }
   else if(inRepos){ reason='Repos post-garde'; reasonCode='repos'; }
   else if(inCg){
     const cg=indispos.find(i=>i.docId===doc.id&&dk>=i.start&&dk<=i.end);
@@ -7974,6 +7992,10 @@ function pickDoc(docId){
     }
     if(pickedDoc.contractEnd&&dk>pickedDoc.contractEnd){
       alert(`Impossible : ${pickedDoc.firstname} ${pickedDoc.lastname} est hors contrat le ${formatDate(dk)} (fin : ${formatDate(pickedDoc.contractEnd)}).`);
+      return;
+    }
+    if(gardeFinitHorsContrat(pickedDoc,pid,dk)){ // [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT]
+      alert(`Impossible : cette garde de nuit du ${formatDate(dk)} se termine le lendemain matin, après la fin du contrat de ${pickedDoc.firstname} ${pickedDoc.lastname} (${formatDate(pickedDoc.contractEnd)}).`);
       return;
     }
   }
@@ -12373,6 +12395,7 @@ function _adelineReason(alt,pid,dk,okSpecial,relax48){
   if(alt.specialCase&&!okSpecial) return 'cas spécial';
   if(!alt.allowedPosts.includes(pid)) return 'poste non autorisé';
   if(!isInContract(alt,dk)) return 'hors contrat';
+  if(gardeFinitHorsContrat(alt,pid,dk)) return 'garde finissant après la fin du contrat'; // [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT] règle ferme, même en repli
   if(Object.values(shifts[dk]||{}).includes(alt.id)) return 'déjà un poste ce jour';
   if(computeRepos(dk).has(alt.id)) return 'repos après une garde';
   if(hardIndispoBlocks(alt,pid,dk)) return 'congé / absence / indispo';
@@ -12446,6 +12469,67 @@ function gardeVeilleAbsenceSanitize(months){
   });
   if(done.length||gardees.length) console.log('🌙 gardeVeilleAbsenceSanitize : '+done.length+' garde(s) redistribuée(s), '+gardees.length+' tolérée(s) faute de remplaçant.',done,gardees);
   return {done,gardees};
+}
+// ── [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT] Passe de fin de génération ───────────────────────────────────────────────────────────
+// Les passes qui posent les gardes ne regardent que le jour même : elles peuvent poser une garde de nuit le dernier jour d'un
+// contrat. Cette passe les reprend : remplaçant pleinement éligible (espacement de 72 h, puis espacement de secours à 48 h comme
+// pour un trou, puis échange contre son poste de jour) ; À DÉFAUT LA GARDE EST RETIRÉE (poste vide, signalé) : règle ferme.
+// Seule exception : un poste verrouillé par le gestionnaire ou partagé reste en place et est signalé (le gestionnaire décide).
+// Une nuit enchaînée à son poste de jour est reprise en bloc ; faute de remplaçant, seule la nuit est retirée (le poste de jour,
+// lui, est encore sous contrat). Appelée avant gardeVeilleAbsenceSanitize, qui revérifie ensuite les remplaçants choisis ici.
+function gardeDernierJourContratSanitize(months){
+  const done=[], vides=[], gardees=[]; if(!GARDE_DERNIER_JOUR_CONTRAT_ON||!months||!months.length) return {done,vides,gardees};
+  window._btViolations=window._btViolations||[];
+  const verrou=(dk,p)=>!!((window._keepLocked&&isShiftLocked(dk,p))||sharedOn(dk,p));
+  months.forEach(([y,m])=>{
+    const d2=dim(y,m);
+    for(let d=1;d<=d2;d++){
+      const dk=dkey(y,m,d), day=shifts[dk]; if(!day) continue;
+      posts.filter(p=>p.overnight).forEach(post=>{
+        const pid=post.id, id=day[pid]; if(id==null) return;
+        const X=docs.find(x=>x.id===id); if(!X||!gardeFinitHorsContrat(X,pid,dk)) return;
+        const fin='le contrat de '+X.lastname+' se termine le '+String(X.contractEnd).slice(0,10)+', la garde finirait le lendemain matin';
+        if(verrou(dk,pid)){
+          gardees.push({dk,pid,doc:X.lastname});
+          window._btViolations.push({dk,postId:pid,docId:X.id,docName:X.firstname+' '+X.lastname,type:'garde-dernier-jour-contrat-verrou',
+            detail:pid+' du '+dk+' : '+fin+' — poste verrouillé ou partagé, laissé tel quel (à corriger par le gestionnaire)'});
+          return;
+        }
+        const dp=_NIGHT_DAY_PARTNER[pid];
+        const pids=(dp&&day[dp]===id&&!verrou(dk,dp))?[dp,pid]:[pid]; // nuit enchaînée : le poste de jour suit la nuit
+        const base=R=>R.id!==id&&R.active!==false&&!(pids.length===2&&docAdjacentSameGroup(dk,pids[0],R.id));
+        let best=null, relaxed=false;
+        for(const relax of (GARDE_SPACING_48H_FALLBACK_ON?[false,true]:[false])){
+          pids.forEach(p=>{ delete day[p]; });
+          let pool=[];
+          try{ pool=docs.filter(R=>base(R)&&pids.every(p=>_adelineStrictOk(R,p,dk,false,relax))).map(R=>({R,swap:null})); }
+          catch(e){ console.warn('gardeDernierJourContratSanitize error:',e); pool=[]; }
+          finally{ pids.forEach(p=>{ day[p]=id; }); }
+          pool.sort((a,b)=>gardeMonthLoad(a.R,dk)-gardeMonthLoad(b.R,dk));
+          if(pool[0]){ best=pool[0]; relaxed=relax; break; }
+        }
+        if(!best){ // échange contre le poste de jour d'un médecin pleinement éligible (X reprend ce poste de jour, encore sous contrat)
+          const pool=docs.filter(base).map(R=>({R,swap:_dayPostSwap(dk,pids,X,R)})).filter(c=>c.swap);
+          pool.sort((a,b)=>gardeMonthLoad(a.R,dk)-gardeMonthLoad(b.R,dk));
+          best=pool[0]||null;
+        }
+        if(!best){
+          delete day[pid];
+          vides.push({dk,pid,doc:X.lastname});
+          window._btViolations.push({dk,postId:pid,docId:X.id,docName:X.firstname+' '+X.lastname,type:'garde-dernier-jour-contrat-vide',
+            detail:pid+' du '+dk+' : '+fin+' — garde retirée, aucun remplaçant pleinement éligible : POSTE VIDE à pourvoir'});
+          return;
+        }
+        if(best.swap) day[best.swap]=id;
+        pids.forEach(p=>{ day[p]=best.R.id; });
+        done.push({dk,pid:pids.join('+'),de:X.lastname,a:best.R.lastname,contre:best.swap||undefined});
+        window._btViolations.push({dk,postId:pid,docId:best.R.id,docName:best.R.firstname+' '+best.R.lastname,type:'garde-dernier-jour-contrat',
+          detail:pids.join('+')+' du '+dk+' : '+X.lastname+' → '+best.R.lastname+(best.swap?' (qui lui cède son '+best.swap+')':'')+' ('+fin+')'+(relaxed?' [espacement de secours à 48 h]':'')});
+      });
+    }
+  });
+  if(done.length||vides.length||gardees.length) console.log('📄 gardeDernierJourContratSanitize : '+done.length+' garde(s) redistribuée(s), '+vides.length+' retirée(s) faute de remplaçant, '+gardees.length+' verrouillée(s) laissée(s).',done,vides,gardees);
+  return {done,vides,gardees};
 }
 // Le médecin tient-il un poste de week-end (we-*) la veille ou le lendemain de ce jour ? (garde + doublure le même WE : interdit)
 function _weNearDay(id,dk){
@@ -13617,6 +13701,8 @@ async function confirmGenerate(){
     try{ R.pm16Double=pm16DoubleSanitize(months); }catch(e){ console.warn('pm16DoubleSanitize error:',e); }
     // [2026-10-17] Dernier filet du poste 14-22 (non impératif, donc absent de finalHoleFill) : 2 trous en T1 2027 (22/03, 24/03).
     try{ R.pm14Fill=pm14HoleFill(months); }catch(e){ console.warn('pm14HoleFill error:',e); }
+    // [2026-11-15 GARDE-DERNIER-JOUR-CONTRAT] Après toutes les passes qui posent des gardes : aucune garde de nuit le dernier jour d'un contrat
+    try{ R.gardeDernierJourContrat=gardeDernierJourContratSanitize(months); }catch(e){ console.warn('gardeDernierJourContratSanitize error:',e); }
     // [2026-11-14 GARDE-VEILLE-ABSENCE] Après toutes les passes qui posent des gardes : redistribuer celles qui débordent sur une absence
     try{ R.gardeVeilleAbsence=gardeVeilleAbsenceSanitize(months); }catch(e){ console.warn('gardeVeilleAbsenceSanitize error:',e); }
     // [2026-09-23] Filet de sécurité : une passe qui ignorerait encore les verrous ne doit pas pouvoir
