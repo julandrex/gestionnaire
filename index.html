@@ -19946,7 +19946,9 @@ function generateAlgo(ptargets, genYear, genMonth){
         continue;
       }
       // Aucune réparation possible : le poste reste vide plutôt que de violer le repos.
-      btViolations.push({dk,postId:tgtPid,type:'bt2-unresolved-empty'});
+      // [2026-11-15 JOURNAL-POSTE-VIDE] texte ajouté : le journal conservé (« type | texte ») ne gardait ni le jour ni le poste
+      btViolations.push({dk,postId:tgtPid,type:'bt2-unresolved-empty',
+        detail:tgtPid+' du '+dk+' : resté vide au dernier recours — aucun médecin sans enfreindre le repos après garde, et aucune garde de la veille n\'a pu être réattribuée (une passe suivante peut encore le combler)'});
     }
   }
 
@@ -23360,6 +23362,119 @@ async function _exchPublishMonth(sb,monthPrefix){
     return error?(error.message||String(error)):null;
   }catch(e){ return e.message||String(e); }
 }
+// ── [2026-11-15 D2-ECHANGE] Un échange ne publie que SES cases ───────────────────────────────────────────────────────────────────
+// Audit du 11/11/2026, point D2. Avant : appliquer un échange renvoyait au serveur TOUT le mois tel qu'il est sur cet ordinateur,
+// donc aussi les modifications non publiées (une régénération pas encore relue partait chez les médecins), sans contrôle de
+// conflit ; le switch J0+J+1 lançait même une publication complète.
+// Maintenant : on relit le mois PUBLIÉ, on n'y change que les cases de l'échange, et on renvoie ce mois. Le brouillon reste sur
+// cet ordinateur, non publié. Refus, sans rien modifier, si le mois publié n'est pas lisible, s'il n'a jamais été publié, ou si une
+// case de l'échange n'est pas tenue, dans la version publiée, par le même médecin que sur cet ordinateur. Si le mois est republié
+// ailleurs entre la lecture et l'écriture, rien n'est écrit et l'échange est annulé sur cet ordinateur.
+// Sans brouillon sur le mois, les colonnes envoyées sont les mêmes qu'avant (absences, verrous, postes, échéance).
+// Retour arrière : EXCH_CASES_SEULES_ON=false (les quatre fonctions reprennent l'ancienne publication du mois entier).
+const EXCH_CASES_SEULES_ON=true;
+function _exchNomMed(id){ if(id==null||id==='') return 'personne'; const d=docs.find(function(x){ return x.id==id; }); return d?(d.firstname+' '+d.lastname):('médecin n° '+id); }
+function _exchMoisLbl(mp){ return MONTHS[+mp.slice(5,7)-1]+' '+mp.slice(0,4); }
+// Cases remplies d'un mois sous une forme comparable (jours vides et cases vides ignorés).
+function _exchForme(sh,mp){
+  const o={};
+  Object.keys(sh||{}).sort().forEach(function(dk){ if(dk.indexOf(mp)!==0) return; const d=sh[dk]||{};
+    Object.keys(d).sort().forEach(function(p){ if(d[p]!=null&&d[p]!=='') o[dk+'|'+p]=String(d[p]); }); });
+  return JSON.stringify(o);
+}
+// À appeler AVANT de modifier `shifts`. cases = [{dk,pid,a}] (a = médecin qui reçoit le poste).
+// Renvoie {ok:false,msg} (rien n'a été modifié) ou le dossier à passer à _exchPublier.
+async function _exchPreparer(sb,cases){
+  if(!EXCH_CASES_SEULES_ON) return {ok:true,off:true};
+  const prep={ok:true,cases:[],mois:{},sale:!!_localEditsAfterLastPublish,brouillon:[]};
+  (cases||[]).forEach(function(c){ if(c&&c.dk&&c.pid) prep.cases.push({dk:c.dk,pid:c.pid,a:c.a,de:(shifts[c.dk]||{})[c.pid]}); });
+  if(!prep.cases.length) return {ok:false,msg:'⚠ Échange NON appliqué : aucune case à modifier.'};
+  const hospital=currentHospitalId;
+  const meme=function(x,y){ return (x==null||x==='')?(y==null||y===''):(y!=null&&String(x)===String(y)); };
+  for(const mp of [...new Set(prep.cases.map(function(c){ return c.dk.slice(0,7); }))]){
+    let row=null;
+    try{
+      const {data,error}=await sb.from('planning_months').select('shifts,published_at')
+        .eq('hospital_id',hospital).eq('year',+mp.slice(0,4)).eq('month',+mp.slice(5,7)-1).maybeSingle();
+      if(error) throw error;
+      row=data;
+    }catch(e){
+      return {ok:false,msg:'❌ Échange NON appliqué : le planning publié de '+_exchMoisLbl(mp)+' n\'a pas pu être lu ('+((e&&e.message)||e)+').\n\nRien n\'a été modifié. Vérifiez la connexion puis réessayez.'};
+    }
+    if(!row) return {ok:false,msg:'⚠ Échange NON appliqué : '+_exchMoisLbl(mp)+' n\'a jamais été publié.\n\nRien n\'a été modifié. Publiez d\'abord ce mois, puis appliquez l\'échange.'};
+    const srv=row.shifts||{};
+    for(const c of prep.cases){
+      if(c.dk.slice(0,7)!==mp) continue;
+      const s=(srv[c.dk]||{})[c.pid];
+      if(!meme(s,c.de)&&!meme(s,c.a))
+        return {ok:false,msg:'⚠ Échange NON appliqué : '+_exPn(c.pid)+' du '+formatDate(c.dk)+' est tenu par '+_exchNomMed(s)+' dans le planning publié, mais par '+_exchNomMed(c.de)+' sur cet ordinateur.\n\n'
+          +'Les deux versions ne concordent pas sur cette case (modification non publiée ici, ou publication faite depuis un autre ordinateur). Rien n\'a été modifié.\n\n'
+          +'Publiez vos modifications, ou rechargez la version publiée, puis réessayez.'};
+    }
+    prep.mois[mp]={shifts:srv,published_at:row.published_at||null};
+    if(_exchForme(shifts,mp)!==_exchForme(srv,mp)) prep.brouillon.push(mp);
+  }
+  return prep;
+}
+// À appeler APRÈS avoir modifié `shifts`. Renvoie null, ou le message d'erreur prêt à afficher (l'échange est alors annulé sur cet
+// ordinateur pour les mois qui n'ont pas été publiés).
+async function _exchPublier(sb,prep){
+  if(!prep||prep.off) return null;
+  const hospital=currentHospitalId, faits=[]; let err=null, enEchec=null;
+  for(const mp of Object.keys(prep.mois)){
+    const M=prep.mois[mp], y=+mp.slice(0,4), m=+mp.slice(5,7)-1, now=new Date().toISOString();
+    const sh=JSON.parse(JSON.stringify(M.shifts||{}));
+    prep.cases.forEach(function(c){ if(c.dk.slice(0,7)!==mp) return; if(!sh[c.dk]) sh[c.dk]={};
+      if(c.a==null||c.a==='') delete sh[c.dk][c.pid]; else sh[c.dk][c.pid]=c.a; });
+    const charge={shifts:sh,published_at:now};
+    if(prep.brouillon.indexOf(mp)<0){ // pas de brouillon sur ce mois : mêmes colonnes que l'ancienne publication d'un échange
+      try{
+        const ddl=JSON.parse(localStorage.getItem('planningURG_desiderata_deadlines')||'{}');
+        const qNum=Math.floor(m/3)+1, nextQNum=qNum>=4?1:qNum+1;
+        charge.posts=posts.map(function(p){return {id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end};});
+        charge.indispos=indispos.filter(function(i){return i.end>=mp+'-01'&&i.start<=mp+'-31';});
+        charge.locked=(typeof lockedShifts!=='undefined'&&Array.isArray(lockedShifts))?lockedShifts.filter(function(l){return l&&typeof l.dk==='string'&&l.dk.indexOf(mp)===0;}):[];
+        charge.desiderata_deadline=ddl['t'+nextQNum]||null;
+      }catch(e){}
+    }
+    try{
+      const cible=function(){ return sb.from('planning_months').update(charge).eq('hospital_id',hospital).eq('year',y).eq('month',m); };
+      // écriture seulement si le mois n'a pas été republié depuis la lecture
+      const q=M.published_at?cible().eq('published_at',M.published_at):cible().is('published_at',null);
+      const r1=await q.select('published_at');
+      if(r1.error) throw r1.error;
+      if(!r1.data||!r1.data.length){
+        // aucune ligne écrite : vrai conflit, ou simple différence d'écriture de la date ? On relit pour trancher.
+        const r2=await sb.from('planning_months').select('published_at').eq('hospital_id',hospital).eq('year',y).eq('month',m).maybeSingle();
+        if(r2.error) throw r2.error;
+        if(!r2.data) throw new Error('ce mois n\'existe plus sur le serveur');
+        if((r2.data.published_at||null)!==M.published_at) throw new Error('ce mois a été publié depuis un autre ordinateur pendant l\'opération');
+        const r3=await cible().select('published_at');
+        if(r3.error) throw r3.error;
+        if(!r3.data||!r3.data.length) throw new Error('aucune ligne modifiée sur le serveur (droits insuffisants ?)');
+      }
+      // La date connue n'est avancée que si cet ordinateur connaissait déjà la version qu'il vient de compléter : sinon l'alerte de
+      // conflit du prochain « Publier » doit continuer à se déclencher.
+      if(!M.published_at||!_knownPublishedAt[mp]||_knownPublishedAt[mp]===M.published_at) _knownPublishedAt[mp]=now;
+      faits.push(mp);
+    }catch(e){ err=(e&&e.message)||String(e); enEchec=mp; break; }
+  }
+  if(!err) return null;
+  // annuler l'échange sur cet ordinateur pour les mois qui ne sont pas partis
+  prep.cases.forEach(function(c){ if(faits.indexOf(c.dk.slice(0,7))>=0) return; if(!shifts[c.dk]) shifts[c.dk]={};
+    if(c.de==null||c.de==='') delete shifts[c.dk][c.pid]; else shifts[c.dk][c.pid]=c.de; });
+  try{ lsSet('planningURG_shifts',JSON.stringify(shifts)); }catch(e){}
+  if(!faits.length) _setLocalEdits(prep.sale);
+  try{ render(); }catch(e){}
+  if(faits.length) return '❌ Échange publié EN PARTIE : '+faits.map(_exchMoisLbl).join(', ')+' est publié, mais pas '+_exchMoisLbl(enEchec)+' ('+err+').\n\nLa demande reste en attente : réessayez « Appliquer » pour terminer.';
+  return '❌ Échange NON publié ('+_exchMoisLbl(enEchec)+') : '+err+'.\n\nL\'échange a été annulé sur cet ordinateur : rien n\'a changé. La demande reste en attente : réessayez « Appliquer ».';
+}
+// Phrase ajoutée au message de réussite quand le planning de cet ordinateur différait du planning publié.
+function _exchInfoBrouillon(prep){
+  if(!prep||!prep.brouillon||!prep.brouillon.length) return '';
+  return '\n\nℹ️ Seules les cases de l\'échange ont été publiées. Pour '+prep.brouillon.map(_exchMoisLbl).join(', ')+', le planning de cet ordinateur diffère du planning publié '
+    +'(modifications non publiées, ou publication faite ailleurs) : le reste n\'a PAS été envoyé et attend votre prochain « Publier ».';
+}
 async function applySwap(id){
   const r=_exchData.find(function(x){ return x.id===id; });
   if(!r||!['confirmed','accepted'].includes(r.status)) return;
@@ -23378,12 +23493,18 @@ async function applySwap(id){
         +'.\n\nLe planning a changé depuis la demande (autre échange ou régénération). Vérifiez le planning et, si besoin, refusez la demande.');
       await loadExchanges(); return;
     }
+    // [2026-11-15 D2-ECHANGE] contrôle sur le planning publié, avant toute modification
+    const _d2Sb=await getSbClient();
+    if(!_d2Sb){ alert('⚠ Supabase non configuré — impossible de publier l\'échange.'); return; }
+    const _d2=await _exchPreparer(_d2Sb,L.moves.map(function(m){ return {dk:m.dk,pid:m.pid,a:m.to}; }));
+    if(!_d2.ok){ alert(_d2.msg); return; }
     L.moves.forEach(function(m){ if(!shifts[m.dk]) shifts[m.dk]={}; shifts[m.dk][m.pid]=m.to; });
     L.moves.forEach(function(m){ _exOfferLeaveCut(m.to,m.dk,m.toName); }); // [2026-10-10]
     saveShifts(); render();
     const sb=await getSbClient();
     if(!sb){ alert('⚠ Supabase non configuré — impossible de publier l\'échange.'); return; }
     const months=[...new Set(L.moves.map(function(m){ return m.dk.slice(0,7); }))];
+    if(EXCH_CASES_SEULES_ON){ const _d2Err=await _exchPublier(sb,_d2); if(_d2Err){ alert(_d2Err); return; } } else // [2026-11-15 D2-ECHANGE]
     for(const mp of months){
       const err=await _exchPublishMonth(sb,mp);
       if(err){
@@ -23402,7 +23523,7 @@ async function applySwap(id){
       message: 'Votre échange croisé du '+formatDate(r.proposer_date)+' / '+formatDate(r.counter_date)+' a été appliqué.',
       url: 'https://julandrex.github.io/julandrex-viewer'
     });
-    alert('✅ Échange croisé appliqué et planning republié ('+months.length+' mois) !\n\nLes médecins voient déjà la mise à jour dans le viewer.');
+    alert('✅ Échange croisé appliqué et planning republié ('+months.length+' mois) !\n\nLes médecins voient déjà la mise à jour dans le viewer.'+_exchInfoBrouillon(_d2)); // [2026-11-15 D2-ECHANGE]
   } finally { window._applyExchInFlight=false; }
 }
 function _exTitName(r){
@@ -24806,6 +24927,12 @@ async function applyExchangeJ0J1(id){
   if(!shifts[j1Dk])shifts[j1Dk]={};
   var accJ0Posts=Object.entries(shifts[dk]).filter(function(e){return e[1]==accLocalId;});
   var propJ0Ids=[r.proposer_post,r.proposer_post2].filter(Boolean);
+  // [2026-11-15 D2-ECHANGE] contrôle sur le planning publié, avant toute modification
+  var _d2=await _exchPreparer(sb,propJ0Ids.map(function(pid){return {dk:dk,pid:pid,a:accLocalId};})
+    .concat(accJ0Posts.map(function(e){return {dk:dk,pid:e[0],a:propLocalId};}))
+    .concat(r.j1_proposer_post?[{dk:j1Dk,pid:r.j1_proposer_post,a:accLocalId}]:[])
+    .concat((r.j1_acceptor_posts||[]).map(function(pid){return {dk:j1Dk,pid:pid,a:propLocalId};})));
+  if(!_d2.ok){alert(_d2.msg);return;}
   propJ0Ids.forEach(function(pid){shifts[dk][pid]=accLocalId;});
   accJ0Posts.forEach(function(e){shifts[dk][e[0]]=propLocalId;});
   // j1_proposer_post = poste DU proposeur le J+1 → va à l'ACCEPTEUR (même sens que J0)
@@ -24820,6 +24947,7 @@ async function applyExchangeJ0J1(id){
   var mths=[[dkD.getFullYear(),dkD.getMonth()],[j1D.getFullYear(),j1D.getMonth()]];
   var seen={};mths=mths.filter(function(m){var k=m[0]+'-'+m[1];if(seen[k])return false;seen[k]=true;return true;});
   var prevCm=cm,prevCy=cy;
+  if(EXCH_CASES_SEULES_ON){ var _d2Err=await _exchPublier(sb,_d2); if(_d2Err){alert(_d2Err);return;} } else // [2026-11-15 D2-ECHANGE] avant : publication complète
   for(var mi=0;mi<mths.length;mi++){cy=mths[mi][0];cm=mths[mi][1];await publishToSupabase(true);}
   cy=prevCy;cm=prevCm;
   // [F4 2026-07-22] → 'confirmed' (traçable) plutôt qu'archivage direct ; `.in(...)` anti-course.
@@ -24833,6 +24961,7 @@ async function applyExchangeJ0J1(id){
       url:_vBaseJ1});
   }catch(e){console.warn('notif J0J1',e);}
   showToast('Switch J0+J1 appliqué et publié');
+  if(_exchInfoBrouillon(_d2)) alert('✅ Switch J0+J1 appliqué.'+_exchInfoBrouillon(_d2)); // [2026-11-15 D2-ECHANGE]
   await loadExchanges();
   } finally { window._applyExchInFlight=false; } // [F6 2026-07-22]
 }
@@ -25132,6 +25261,12 @@ async function applyExchangeSwitch(id,selectedPosts){
   if(!accCurrentPosts.length){alert('L\'accepteur n\'a pas de poste ce jour — utilisez Appliquer à la place.');return;}
   // Postes du proposeur impliqués dans l'échange
   const propPostIds=[r.proposer_post,r.proposer_post2].filter(Boolean);
+  // [2026-11-15 D2-ECHANGE] contrôle sur le planning publié, avant toute modification
+  const _d2Sb=await getSbClient();
+  if(!_d2Sb){ alert('⚠ Supabase non configuré — impossible de publier le switch. Configurez les clés dans Admin → Viewer Supabase.'); return; }
+  const _d2=await _exchPreparer(_d2Sb,propPostIds.map(function(pid){return {dk:dk,pid:pid,a:accLocalId};})
+    .concat((selectedPosts&&selectedPosts.length?accCurrentPosts.filter(function(e){return selectedPosts.includes(e[0]);}):accCurrentPosts).map(function(e){return {dk:dk,pid:e[0],a:propLocalId};})));
+  if(!_d2.ok){ alert(_d2.msg); return; }
   // Switch : postes du proposeur → accepteur
   propPostIds.forEach(function(pid){shifts[dk][pid]=accLocalId;});
   // Switch : postes de l'accepteur → proposeur (seulement ceux sélectionnés)
@@ -25145,6 +25280,7 @@ async function applyExchangeSwitch(id,selectedPosts){
   const hospital = currentHospitalId;
   const dk2=new Date(dk+'T12:00:00');
   const exchMonth=dk2.getMonth(), exchYear=dk2.getFullYear();
+  if(EXCH_CASES_SEULES_ON){ const _d2Err=await _exchPublier(sb,_d2); if(_d2Err){ alert(_d2Err); return; } if(_exchInfoBrouillon(_d2)) alert('✅ Switch de poste appliqué.'+_exchInfoBrouillon(_d2)); } else // [2026-11-15 D2-ECHANGE]
   try{
     const monthPrefix=`${exchYear}-${('0'+(exchMonth+1)).slice(-2)}`;
     const monthShifts={};
@@ -25304,6 +25440,12 @@ async function applyExchange(id){
     return;
   }
 
+  // [2026-11-15 D2-ECHANGE] contrôle sur le planning publié, avant toute modification
+  const _d2Sb=await getSbClient();
+  if(!_d2Sb){ alert('⚠ Supabase non configuré — impossible de publier l\'échange. Configurez les clés dans Admin → Viewer Supabase.'); return; }
+  const _d2=await _exchPreparer(_d2Sb,_exchPostIds.map(function(pid){ return {dk:dk,pid:pid,a:accLocalId}; }));
+  if(!_d2.ok){ alert(_d2.msg); return; }
+
   if(r.type==='donation'){
     // Don : proposer donne son poste à acceptor
     shifts[dk][r.proposer_post] = accLocalId;
@@ -25328,6 +25470,7 @@ async function applyExchange(id){
   const hospital = currentHospitalId;
   const exchMonth = new Date(dk+'T12:00:00').getMonth();
   const exchYear  = new Date(dk+'T12:00:00').getFullYear();
+  if(EXCH_CASES_SEULES_ON){ const _d2Err=await _exchPublier(sb,_d2); if(_d2Err){ alert(_d2Err); return; } } else // [2026-11-15 D2-ECHANGE]
   try{
     const monthPrefix = `${exchYear}-${('0'+(exchMonth+1)).slice(-2)}`;
     const monthShifts = {};
@@ -25376,7 +25519,7 @@ async function applyExchange(id){
     message: `Votre échange de poste du ${new Date(dk+'T12:00:00').toLocaleDateString('fr-BE')} a été appliqué.`,
     url: _viewerBase
   });
-  alert('✅ Échange appliqué et planning republié !\n\nLes médecins voient déjà la mise à jour dans le viewer.');
+  alert('✅ Échange appliqué et planning republié !\n\nLes médecins voient déjà la mise à jour dans le viewer.'+_exchInfoBrouillon(_d2)); // [2026-11-15 D2-ECHANGE]
   } finally { window._applyExchInFlight=false; } // [F6 2026-07-22]
 }
 
