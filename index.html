@@ -2225,7 +2225,7 @@ let posts = [
   // ── Gardes nuit semaine ──
   {id:'n16',      name:'16-07',   full:'Garde 16h–07h',         start:'16:00',end:'07:00',overnight:true, color:'#fb7185',repos:true, chain:null,       section:'nuit',avail:'wd', imperatif:true, startByDow:{5:'18:00'}, endByDow:{5:'09:00'}},
   {id:'coord-n',  name:'COORD-N', full:'Garde Coord 18h–09h',   start:'18:00',end:'09:00',overnight:true, color:'#93c5fd',repos:true, chain:null,       section:'nuit',avail:'wd'},
-  {id:'smur-n',   name:'SMUR-N',  full:'Garde SMUR 19h–08h',    start:'19:00',end:'08:00',overnight:true, color:'#6ee7b7',repos:true, chain:null,       section:'nuit',avail:'wd'},
+  {id:'smur-n',   name:'SMUR-N',  full:'Garde SMUR 19h–08h',    start:'19:00',end:'08:00',overnight:true, color:'#6ee7b7',repos:true, chain:null,       section:'nuit',avail:'wd', endByDow:{5:'09:00'}, endOnHoliday:'09:00'}, // [2026-11-16 SMUR-N-9H] fin 9 h le samedi matin et un jour férié
   {id:'satmu-n',  name:'SATMU-N', full:'Garde SATMU 18h–09h',   start:'18:00',end:'09:00',overnight:true, color:'#c4b5fd',repos:true, chain:null,       section:'nuit',avail:'wd'},
   // ── Week-end U3 ──
   {id:'we-doublure', name:'DOUB', full:'WE Doublure U3 9h–21h', start:'09:00',end:'21:00',overnight:false,color:'#38bdf8',repos:true, chain:null,       section:'we',  avail:'we'},
@@ -2500,7 +2500,7 @@ function postViewFor(dk,pid,docId,p){
   if(!p||!sh||sh.mode==='double') return p;
   const sp=shareSpans(Object.assign({},p,{start:postStartFor(p,dk),end:postEndFor(p,dk)}),sh);
   const mine=docId===sh.docId2?sp.b:sp.a;
-  return Object.assign({},p,{start:mine[0],end:mine[1],startByDow:null,endByDow:null,overnight:false,
+  return Object.assign({},p,{start:mine[0],end:mine[1],startByDow:null,endByDow:null,endOnHoliday:null,overnight:false,
     name:p.name+' ½',full:(p.full||p.name)+' (½)'});
 }
 function pdfLabelShared(dk,pid,doc){
@@ -3009,8 +3009,8 @@ function loadPosts(){
   // Snapshot des flags par défaut du code source AVANT écrasement — les postes
   // sauvegardés avant l'ajout d'un flag (ex: imperatif) ne l'ont jamais reçu depuis,
   // ce qui les fait passer sous silence dans les contrôles de couverture obligatoire.
-  const _defaultImperatif={}, _defaultStartByDow={}, _defaultEndByDow={};
-  posts.forEach(p=>{ _defaultImperatif[p.id]=p.imperatif===true; if(p.startByDow)_defaultStartByDow[p.id]=p.startByDow; if(p.endByDow)_defaultEndByDow[p.id]=p.endByDow; });
+  const _defaultImperatif={}, _defaultStartByDow={}, _defaultEndByDow={}, _defaultEndOnHoliday={};
+  posts.forEach(p=>{ _defaultImperatif[p.id]=p.imperatif===true; if(p.startByDow)_defaultStartByDow[p.id]=p.startByDow; if(p.endByDow)_defaultEndByDow[p.id]=p.endByDow; if(p.endOnHoliday)_defaultEndOnHoliday[p.id]=p.endOnHoliday; });
   try{
     const s=lsGet('planningURG_posts');
     if(s!==null){
@@ -3022,6 +3022,7 @@ function loadPosts(){
         // source sur les postes sauvegardés AVANT leur ajout (ex: n16 vendredi 18h-09h).
         if(p.startByDow===undefined&&_defaultStartByDow[p.id]) p.startByDow=_defaultStartByDow[p.id];
         if(p.endByDow===undefined&&_defaultEndByDow[p.id]) p.endByDow=_defaultEndByDow[p.id];
+        if(p.endOnHoliday===undefined&&_defaultEndOnHoliday[p.id]) p.endOnHoliday=_defaultEndOnHoliday[p.id]; // [2026-11-16 SMUR-N-9H]
         posts.push(p);
       });
       return parsed.length>0;
@@ -4519,10 +4520,14 @@ function postStartFor(p, dk){
   if(p&&p.startByDow&&dk&&!isHoliday(dk)){ const ov=p.startByDow[dowOf(dk)]; if(ov) return ov; }
   return p?p.start:'';
 }
+// [2026-11-16 SMUR-N-9H] `endOnHoliday` : heure de fin d'un poste de nuit qui SE TERMINE UN JOUR FÉRIÉ (il commence la veille) ;
+// prioritaire sur `endByDow`. Ex. SMUR-N : 19h–08h en semaine, 19h–09h la nuit du vendredi au samedi et quand elle finit un jour férié.
 function postEndFor(p, dk){
+  if(p&&p.endOnHoliday&&dk&&isHoliday(_dkPlus1(dk))) return p.endOnHoliday;
   if(p&&p.endByDow&&dk&&!isHoliday(dk)){ const ov=p.endByDow[dowOf(dk)]; if(ov) return ov; }
   return p?p.end:'';
 }
+function _dkPlus1(dk){ const d=new Date(dk+'T12:00:00'); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
 function postHours(p, dk){
   if(!p) return 0;
   // Circuit sam/dim ne compte pas dans les heures
