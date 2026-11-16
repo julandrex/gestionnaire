@@ -11819,6 +11819,23 @@ const POLISH_ON=true;
 const POLISH_MS=60000;
 const POLISH_ANNEAL_ON=true;   // 2e phase : recuit simulé (échanges à nombre égal) quand la descente est bloquée sur un optimum local
 const POLISH_T0=4, POLISH_T1=0.4;
+// ── [2026-11-16 D6-REPRODUCTIBLE] Mêmes données → même planning ──────────────────────────────────────────────────────────────────
+// Audit du 11/11/2026, point D6. Avant : les tirages 2 à 10 et l'amélioration progressive tiraient au hasard (Math.random), et le
+// recuit s'arrêtait au bout de POLISH_MS millisecondes : deux générations sur les mêmes données donnaient deux plannings, et un
+// ordinateur plus lent en donnait un troisième. Impossible de rejouer une génération pour expliquer une décision.
+// Maintenant : tout le hasard de la génération vient d'un générateur à graine (graine = CLIENT_CONFIG.rules.genRunSeed, puis le
+// tirage retenu), et le recuit fait un NOMBRE FIXE d'essais (POLISH_ITERS pour un mois, moins quand la portée grandit) au lieu de
+// s'arrêter à l'heure. Le nombre d'essais est réglé pour durer à peu près autant qu'avant sur le poste du gestionnaire.
+// Garde-fou : si l'amélioration progressive dépasse POLISH_CAP × POLISH_MS, elle est coupée ; le résultat est alors signalé comme
+// non reproductible dans le journal. AUCUNE règle métier ne change : seuls le choix des tirages et la durée du recuit changent.
+// Retour arrière : GEN_REPRODUCTIBLE_ON=false (hasard et arrêt à l'heure, comme avant).
+const GEN_REPRODUCTIBLE_ON=true;
+const POLISH_ITERS=15000;
+const POLISH_CAP=3;
+function _jlxRng(seed){ // mulberry32 : suite de nombres entre 0 et 1, entièrement déterminée par la graine
+  let a=(seed>>>0)||1;
+  return function(){ a=(a+0x6D2B79F5)>>>0; let x=a; x=Math.imul(x^(x>>>15),x|1); x^=x+Math.imul(x^(x>>>7),x|61); return ((x^(x>>>14))>>>0)/4294967296; };
+}
 const POLISH_W72=6, POLISH_WWE=5, POLISH_WWE2=4, POLISH_WDE=6, POLISH_WPM16=4;
 const POLISH_WNOWE=4;   // PH éligible sans AUCUNE garde de week-end dans un mois où il n'a pas plus de 4 jours de congé (remarque d'Adeline : Steckx, Mommens, Canbay…)
 const POLISH_CROSS_ON=true;   // échange d'une garde de week-end contre une nuit de semaine entre deux médecins   // poids des enchaînements (72 h, WE consécutifs, 2 WE/mois, D+E, 2e 16-00)
@@ -13401,11 +13418,11 @@ function runGenerate(){
 // rechargement de la page), donc une génération mois par mois ne laissait que le journal du dernier mois. Chaque génération ajoute ici une
 // entrée (date, mois générés, tirage retenu, écarts) dans localStorage ('planningURG_journaux', 12 dernières générations). Lecture, dans la
 // console : JSON.parse(localStorage.getItem('planningURG_journaux')).forEach(g=>{ console.log('== '+g.at+' '+g.mois+' seed '+g.seed); g.ecarts.forEach(e=>console.log(e)); })
-function persistGenerationJournal(months,seed){
+function persistGenerationJournal(months,seed,repro){ // [2026-11-16 D6-REPRODUCTIBLE] + fiche de reproduction
   try{
     const arr=JSON.parse(localStorage.getItem('planningURG_journaux')||'[]')||[];
     const ecarts=(window._btViolations||[]).slice(0,400).map(v=>String(v.type||'')+' | '+String(v.detail||'').slice(0,260));
-    arr.push({at:new Date().toISOString(),mois:months.map(([y,m])=>y+'-'+pad(m+1)).join(','),seed:seed,ecarts:ecarts});
+    arr.push({at:new Date().toISOString(),mois:months.map(([y,m])=>y+'-'+pad(m+1)).join(','),seed:seed,ecarts:ecarts,repro:repro||null});
     while(arr.length>12) arr.shift();
     localStorage.setItem('planningURG_journaux',JSON.stringify(arr));
   }catch(e){ console.warn('persistGenerationJournal :',e.message); }
@@ -13749,6 +13766,11 @@ async function confirmGenerate(){
   const _polish=async()=>{
     if(!POLISH_ON) return null;
     const t0=Date.now(), st={tried:0,valid:0,acc:0,fullRej:0,passes:0,before:null,after:null,moves:[]};
+    // [2026-11-16 D6-REPRODUCTIBLE] hasard à graine (graine configurée + tirage retenu) et nombre fixe d'essais du recuit
+    const _d6=GEN_REPRODUCTIBLE_ON;
+    const rnd=_d6?_jlxRng((((+_configuredSeed||0)>>>0)*31+((_best&&+_best.seed)||0))>>>0):Math.random;
+    const _itersMax=_d6?Math.max(200,Math.round(POLISH_ITERS/Math.sqrt(Math.max(1,months.length)))):0;
+    if(_d6) st.repro={recuitPrevu:_itersMax,recuitFait:0,coupe:false};
     window._genCaches={wd:{},gqm:{}};
     try{
       _polInit();
@@ -13799,14 +13821,15 @@ async function confirmGenerate(){
         });
         return out;
       };
-      const budgetOk=()=>Date.now()-t0<POLISH_MS;
+      const budgetOk=()=>{ if(!_d6) return Date.now()-t0<POLISH_MS;
+        const ok=Date.now()-t0<POLISH_MS*POLISH_CAP; if(!ok) st.repro.coupe=true; return ok; }; // [2026-11-16 D6-REPRODUCTIBLE] garde-fou seulement
       let lastYield=Date.now();
       outer: for(let pass=0;pass<12&&budgetOk();pass++){
         st.passes++;
         const cells=_defectCells();
         // dédoublonnage + ordre aléatoire
         const seen=new Set(), list=[]; cells.forEach(c=>{ const k=c.dk+'|'+c.pid; if(!seen.has(k)){ seen.add(k); list.push(c); } });
-        for(let i=list.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [list[i],list[j]]=[list[j],list[i]]; }
+        for(let i=list.length-1;i>0;i--){ const j=Math.floor(rnd()*(i+1)); [list[i],list[j]]=[list[j],list[i]]; }
         if(!list.length) break;
         let improvedThisPass=false;
         for(const c of list){
@@ -13842,19 +13865,19 @@ async function confirmGenerate(){
         const tStart=Date.now(), tSpan=Math.max(1,POLISH_MS-(tStart-t0));
         const cellsOf=()=>{ const out=[]; _scopeKeys.forEach(k=>{ if(past.has(k)) return; const day=shifts[k]; if(!day) return; _POL_HEAVY.forEach(pid=>{ const id=day[pid]; if(id!=null&&_polPH.has(id)) out.push({dk:k,pid,id}); }); }); return out; };
         let defect=_defectCells(), refresh=0;
-        while(budgetOk()){
-          const frac=(Date.now()-tStart)/tSpan, T=POLISH_T0*Math.pow(POLISH_T1/POLISH_T0,Math.min(1,frac));
+        while(budgetOk()&&(!_d6||st.annealIters<_itersMax)){ // [2026-11-16 D6-REPRODUCTIBLE] nombre fixe d'essais ; la température suit le nombre d'essais, plus l'horloge
+          const frac=_d6?(st.annealIters/_itersMax):((Date.now()-tStart)/tSpan), T=POLISH_T0*Math.pow(POLISH_T1/POLISH_T0,Math.min(1,frac));
           if(++refresh>=25){ refresh=0; defect=_defectCells(); }
-          const pool=(defect.length&&Math.random()<0.8)?defect:cellsOf(); if(!pool.length) break;
-          const c=pool[Math.floor(Math.random()*pool.length)];
+          const pool=(defect.length&&rnd()<0.8)?defect:cellsOf(); if(!pool.length) break;
+          const c=pool[Math.floor(rnd()*pool.length)];
           st.annealIters++;
           if((shifts[c.dk]||{})[c.pid]!==c.id||!movable(c.dk,c.pid,c.id)) continue;
           const sw=candidates(c).filter(x=>x.kind==='swap'||x.kind==='cross'); if(!sw.length) continue;
           let log=null;
-          for(let tr=0;tr<12&&!log;tr++){ log=sw[Math.floor(Math.random()*sw.length)].run(); st.tried++; }
+          for(let tr=0;tr<12&&!log;tr++){ log=sw[Math.floor(rnd()*sw.length)].run(); st.tried++; }
           if(!log) continue; st.valid++;
           const f=fast(), d=f-curFast;
-          if(d<=0||Math.random()<Math.exp(-d/T)){
+          if(d<=0||rnd()<Math.exp(-d/T)){
             const h=hardOf(); if(h>curHard){ undo(log); continue; }
             curFast=f; curHard=h; st.annealAcc++;
             if(f<bestFast-0.01){ bestFast=f; const nxt=full(); if(nxt.h<=bestFull.h&&nxt.j<bestFull.j){ bestFull=nxt; bestSnap=_snapshot(); } }
@@ -13863,6 +13886,7 @@ async function confirmGenerate(){
         }
         if(bestFull.j<cur.j){ _restoreSnap(bestSnap); cur=bestFull; } else { _restoreSnap(bestSnap); }
         curFast=fast();
+        if(_d6) st.repro.recuitFait=st.annealIters; // [2026-11-16 D6-REPRODUCTIBLE]
       }
       st.after=cur;
     } catch(e){ console.warn('[POLISH] erreur :',e); }
@@ -13970,8 +13994,10 @@ async function confirmGenerate(){
   let _best=null;
   let _holidayRescued=[], _doublureSmurNRescued=[], _reposViolationResult={rescued:[],unresolved:[]}, _rebalanceSwaps=[], _doubleBookingsFixed=[], _finalHoleFilled=[];
   const _assign=RR=>{ _holidayRescued=RR.holiday; _doublureSmurNRescued=RR.doublureSmur; _reposViolationResult=RR.repos; _rebalanceSwaps=RR.rebalance; _doubleBookingsFixed=RR.doubles; _finalHoleFilled=RR.finalFill; };
+  const _rngTirages=GEN_REPRODUCTIBLE_ON?_jlxRng((+_configuredSeed||0)>>>0):Math.random, _seedsTires=[]; // [2026-11-16 D6-REPRODUCTIBLE]
   for(let attempt=0; attempt<GEN_ATTEMPTS; attempt++){
-    const seed = attempt===0 ? _configuredSeed : (Math.floor(Math.random()*900000)+100000);
+    const seed = attempt===0 ? _configuredSeed : (Math.floor(_rngTirages()*900000)+100000);
+    _seedsTires.push(seed);
     const R = await _runGen(seed, 'Recherche du meilleur planning — tentative '+(attempt+1)+'/'+GEN_ATTEMPTS);
     const probs = _genProblems();
     // Repos non RÉPARÉ (médecin forcé sans repos, aucun remplaçant) = défaut « hard ».
@@ -13993,7 +14019,16 @@ async function confirmGenerate(){
   try{ window.__polishStats=await _polish(); }catch(e){ console.warn('[POLISH]',e); }   // [2026-08-19] cf. ci-dessus : aligner le rapport sur le tirage RETENU
   // [2026-11-15 DEMI-GARDE-WE] demi-gardes de WE de jour (règle de fiche), une seule fois, sur le tirage retenu ; consignées dans le journal des écarts
   try{ const _dg=demiGardeWEPass(months,_scopeKeys); window.__demiGardeWE=_dg; if(_dg.length){ window._btViolations=(window._btViolations||[]).concat(_dg); console.log('[DEMI-GARDE-WE]',_dg); } }catch(e){ console.warn('demiGardeWEPass error:',e); }
-  persistGenerationJournal(months,_best.seed); // [2026-10-21] journal conservé après rechargement et d'un mois à l'autre
+  // [2026-11-16 D6-REPRODUCTIBLE] fiche de reproduction : avec les mêmes données, ces valeurs redonnent le même planning
+  window.__genRepro=null;
+  if(GEN_REPRODUCTIBLE_ON){ try{
+    const _rp=(window.__polishStats&&window.__polishStats.repro)||null;
+    window.__genRepro={graine:_configuredSeed,tirages:_seedsTires.slice(),retenu:_best.seed,recuitPrevu:_rp?_rp.recuitPrevu:0,recuitFait:_rp?_rp.recuitFait:0,coupe:!!(_rp&&_rp.coupe)};
+    if(window.__genRepro.coupe){ window._btViolations=window._btViolations||[];
+      window._btViolations.push({type:'generation-non-reproductible',detail:'Amélioration progressive coupée par le garde-fou de durée ('+Math.round(POLISH_MS*POLISH_CAP/1000)+' s) après '+window.__genRepro.recuitFait+' essai(s) sur '+window.__genRepro.recuitPrevu+' : ce planning est valable, mais une nouvelle génération sur les mêmes données peut en donner un autre (ordinateur trop lent ou très occupé)'});
+      console.warn('[D6] génération non reproductible : amélioration progressive coupée par le garde-fou de durée'); }
+  }catch(e){ console.warn('[D6] fiche de reproduction :',e); } }
+  persistGenerationJournal(months,_best.seed,window.__genRepro); // [2026-10-21] journal conservé après rechargement et d'un mois à l'autre
   const _chosenClean=_best.hard===0;
   console.log('%c[AUTO-SEED] '+(_best.hard?'⚠️':'✅')+' retenu : seed '+_best.seed+' — correction:'+_best.hard+(_best.hard?' ['+_best.probs.map(p=>p.code+':'+p.n).join(', ')+']':'')+' | qualité:'+_best.soft.total+' (charge:'+_best.soft.b+' gardesWE:'+_best.soft.c+' fêtes:'+_best.soft.f+' vendredis/gardes:'+(_best.soft.g||0)+')','font-weight:bold;color:'+(_best.hard?'#ef4444':'#22c55e'));
   if(_finalHoleFilled.length) console.log('[FINAL-FILL] '+_finalHoleFilled.length+' poste(s) comblé(s) en fin de génération:',_finalHoleFilled);
