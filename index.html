@@ -1913,7 +1913,44 @@ document.addEventListener('DOMContentLoaded',function(){
     <div style="max-height:52vh;overflow-y:auto;padding-right:4px;" id="prog-sliders"></div>
     <div class="mact">
       <button class="tb-ghost tb-btn" onclick="closeModal('progress-modal')">Annuler</button>
+      <button class="tb-ghost tb-btn" id="solv-open-btn" onclick="solveurOuvrir()" title="Perfectionne le planning actuel de la période (mois ou trimestre) avec le solveur mathématique ; le résultat est un brouillon à comparer avant de le garder">🧮 Améliorer avec le solveur</button>
       <button class="tb-primary tb-btn" onclick="confirmGenerate()">⚡ Générer</button>
+    </div>
+  </div>
+</div>
+<!-- [2026-11-17 SOLVEUR] Amélioration par le solveur HiGHS : durée, progression, brouillon à comparer -->
+<div class="modal-bg" id="solveur-modal">
+  <div class="modal" style="width:680px;max-width:96vw;">
+    <h3>🧮 Améliorer le planning avec le solveur</h3>
+    <div id="solv-etape-choix">
+      <p style="font-size:12px;color:var(--t2);line-height:1.55;margin:0 0 10px;">Le solveur part du planning actuel de la période <b id="solv-periode"></b> et cherche, fenêtre de quelques jours après fenêtre, un planning qui respecte mieux les règles (chaînages, week-ends, équité, heures, souhaits). Les cases verrouillées, partagées à la main et les jours passés ne bougent pas. <b>Rien n'est modifié tant que vous n'avez pas choisi « Garder ».</b></p>
+      <p style="font-size:12px;color:var(--warn);margin:0 0 12px;">⚠️ Gardez cet onglet ouvert et l'ordinateur allumé pendant le calcul (l'ordinateur ne doit pas se mettre en veille).</p>
+      <label style="font-size:11px;color:var(--t3);">Durée du calcul</label>
+      <select id="solv-duree" class="fsel" style="width:100%;margin:4px 0 4px;">
+        <option value="600">10 minutes — gain plus limité</option>
+        <option value="1800" selected>30 minutes — recommandé</option>
+        <option value="3600">60 minutes — meilleur résultat</option>
+      </select>
+      <div class="mact">
+        <button class="tb-ghost tb-btn" onclick="closeModal('solveur-modal')">Annuler</button>
+        <button class="tb-primary tb-btn" onclick="solveurLancer()">Lancer le calcul</button>
+      </div>
+    </div>
+    <div id="solv-etape-calcul" style="display:none;">
+      <div id="solv-msg" style="font-size:13px;color:var(--t1);margin-bottom:8px;">Préparation des données…</div>
+      <div class="gen-bar" style="width:100%;"><div class="gen-fill" id="solv-fill" style="width:0%"></div></div>
+      <div id="solv-detail" style="font-size:11px;color:var(--t3);margin-top:8px;line-height:1.6;"></div>
+      <div class="mact">
+        <button class="tb-ghost tb-btn" onclick="solveurArreter(false)" style="color:var(--err);">Abandonner</button>
+        <button class="tb-primary tb-btn" onclick="solveurArreter(true)">Arrêter et voir le meilleur résultat</button>
+      </div>
+    </div>
+    <div id="solv-etape-brouillon" style="display:none;">
+      <div id="solv-bilan"></div>
+      <div class="mact">
+        <button class="tb-ghost tb-btn" onclick="solveurAnnuler()">Annuler (garder le planning actuel)</button>
+        <button class="tb-primary tb-btn" id="solv-garder" onclick="solveurGarder()">✅ Garder ce planning</button>
+      </div>
     </div>
   </div>
 </div>
@@ -13427,6 +13464,198 @@ function persistGenerationJournal(months,seed,repro){ // [2026-11-16 D6-REPRODUC
     localStorage.setItem('planningURG_journaux',JSON.stringify(arr));
   }catch(e){ console.warn('persistGenerationJournal :',e.message); }
 }
+// ── [2026-11-17 SOLVEUR] Amélioration du planning par le solveur HiGHS (Citadelle seulement) ─────────────────────────────
+// Décisions du Dr Sorce (17/11/2026) : le moteur génère comme avant ; « 🧮 Améliorer avec le solveur » perfectionne ensuite le
+// planning de la période (mois ou trimestre) pendant 10 / 30 / 60 minutes (30 par défaut) ; le résultat est un BROUILLON à
+// comparer (cases changées, postes vides, alertes, heures, souhaits) que le gestionnaire garde ou annule ; rien n'est publié.
+// Le calcul tourne dans un worker (solveur_navigateur/worker.js : HiGHS WebAssembly + modele.js, porté de solveur_code/solveur_v17).
+// Fonctionne seulement dans le gestionnaire en ligne (http/https) : un worker ne peut pas être lancé depuis un fichier local.
+const SOLVEUR_ON=true;                     // retour arrière : false (le bouton disparaît)
+const SOLVEUR_DOSSIER='solveur_navigateur/';
+let _solv={worker:null,meilleur:null,X:null,months:null,t0:0,duree:0,brouillon:null,arret:false};
+function solveurMoisPeriode(){ if(genMode==='month') return [[cy,cm]]; const q=Math.floor(cm/3)*3; return [[cy,q],[cy,q+1],[cy,q+2]]; }
+function solveurLibellePeriode(months){ const MN=['janvier','février','mars','avril','mai','juin','juillet','août','septembre','octobre','novembre','décembre'];
+  return months.length===1?MN[months[0][1]]+' '+months[0][0]:MN[months[0][1]]+' – '+MN[months[months.length-1][1]]+' '+months[0][0]; }
+// Données du modèle pour la période : cases à pourvoir, éligibilité « comme le moteur » (pickEligibility + tolérances du moteur),
+// nuits chaînables, souhaits, contexte figé, heures et cibles, fiches. L'état du planning est rétabli à la fin.
+function solveurExtraire(months){
+  const pref=months.map(([y,m])=>y+'-'+pad(m+1));
+  const jours=[]; months.forEach(([y,m])=>{ for(let d=1;d<=dim(y,m);d++) jours.push(dkey(y,m,d)); });
+  const today=new Date().toLocaleDateString('sv-SE',{timeZone:'Europe/Brussels'});
+  const AUTO='demi-garde-we';
+  const G=posts.map(p=>p.id), info={};
+  G.forEach(pid=>{ const p=getPost(pid); info[pid]={section:p.section,garde:['soir','nuit','we'].includes(p.section),repos:!!p.repos,reposDim:!!((p.repos&&pid!=='pm14')||pid==='pm16'),
+    semaine:WEEK_GARDE_PIDS.includes(pid),maxG:MAX_GARDES_PIDS.includes(pid)}; });
+  const lockSet=new Set(lockedShifts.filter(l=>l&&jours.includes(l.dk)).map(l=>l.dk+'|'+l.pid));
+  const demiAuto=(dk,pid)=>{ const sh=(sharedShifts[dk]||{})[pid]; return !!(sh&&sh.auto===AUTO&&!lockSet.has(dk+'|'+pid)); };
+  // planning de départ : une demi-garde automatique revient au second (le modèle redécide des demi-gardes)
+  const reel={}, demiAvant=[];
+  jours.forEach(dk=>{ reel[dk]=Object.assign({},shifts[dk]||{});
+    Object.keys(sharedShifts[dk]||{}).forEach(pid=>{ if(!demiAuto(dk,pid)) return; const sh=sharedShifts[dk][pid];
+      demiAvant.push({dk,pid,doc:reel[dk][pid],second:sh.docId2,heures:sh.h1}); if(sh.docId2!=null) reel[dk][pid]=sh.docId2; }); });
+  const estFixe=(dk,pid)=>dk<today||lockSet.has(dk+'|'+pid)||(!!sharedOn(dk,pid)&&!demiAuto(dk,pid));
+  const demande=[], fixes=[];
+  jours.forEach(dk=>{ const pids=Object.keys(reel[dk]).filter(p=>reel[dk][p]!=null);
+    posts.forEach(p=>{ if(p.imperatif&&!p.optional&&postActiveOnDay(p,dk)&&!pids.includes(p.id)&&!estFixe(dk,p.id)) pids.push(p.id); });   // postes impératifs vides
+    pids.forEach(pid=>{ const doc=reel[dk][pid];
+      if(estFixe(dk,pid)){ if(doc!=null) fixes.push({dk,pid,doc}); const sh=sharedOn(dk,pid); if(sh&&sh.docId2!=null&&!demiAuto(dk,pid)) fixes.push({dk,pid,doc:sh.docId2}); }
+      else demande.push({dk,pid,m:pref.indexOf(dk.slice(0,7))}); }); });
+  const sauveShifts={}; jours.forEach(dk=>{ sauveShifts[dk]=shifts[dk]; }); const sauveShared=JSON.stringify(sharedShifts), sCy=cy, sCm=cm;
+  try{
+    jours.forEach(dk=>{ shifts[dk]=Object.assign({},reel[dk]); });
+    jours.forEach(dk=>{ const d=sharedShifts[dk]; if(!d) return; Object.keys(d).forEach(pid=>{ if(d[pid]&&d[pid].auto===AUTO&&!lockSet.has(dk+'|'+pid)) delete d[pid]; }); if(!Object.keys(d).length) delete sharedShifts[dk]; });
+    demande.forEach(c=>{ if(shifts[c.dk]) delete shifts[c.dk][c.pid]; });
+    const actifs=docs.filter(d=>d.active!==false);
+    const CH=[['coord','coord-n'],['b','smur-n'],['a','satmu-n'],['admin','coord-n'],['admin','smur-n'],['admin','satmu-n']];
+    const estSouhait=(id,dk,pid)=>indispos.some(i=>i.type==='pref'&&i.docId==id&&dk>=i.start&&dk<=i.end&&(!i.posteId||prefMatchesPost(i.posteId,pid)));
+    const eligible=(doc,dk,pid)=>{ const e=pickEligibility(doc,dk,pid,computeRepos(dk)); if(e.clickable) return {ok:true};
+      if(e.reasonCode==='already'){ const jour=Object.entries(shifts[dk]||{}).filter(([p,v])=>v===doc.id&&p!==pid).map(([p])=>p);
+        if(jour.length===1&&CH.some(([a,b])=>a===jour[0]&&b===pid)){ const p0=jour[0]; delete shifts[dk][p0]; const e2=pickEligibility(doc,dk,pid,computeRepos(dk)); shifts[dk][p0]=doc.id;
+          if(e2.clickable) return {ok:true}; if(e2.reasonCode==='quota'&&estSouhait(doc.id,dk,pid)) return {ok:true}; } }
+      if(e.reasonCode==='quota'&&estSouhait(doc.id,dk,pid)) return {ok:true};
+      return {ok:false,code:e.reasonCode}; };
+    const elig=[], forcables=[];
+    demande.forEach((c,ci)=>actifs.forEach(d=>{ const e=eligible(d,c.dk,c.pid);
+      if(e.ok) elig.push([ci,d.id]); else if(e.code==='quota'){ const rr=diagRefineReason(d,c.pid,c.dk); if(!rr||/^Plafond/.test(rr)) forcables.push([ci,d.id]); } }));
+    // nuits chaînables (avec les contrôles du 14-15/11 : lendemain indisponible, absences datées, jour indisponible, poste de jour à pourvoir)
+    const JOUR_DE={'coord-n':'coord','satmu-n':'a','smur-n':'b'}, deja=new Set(elig.concat(forcables).map(([ci,d])=>ci+'|'+d)), chainables=[];
+    demande.forEach((c,ci)=>{ if(!JOUR_DE[c.pid]) return; const cp=getPost(c.pid);
+      actifs.forEach(d=>{ if(deja.has(ci+'|'+d.id)) return;
+        if(!isInContract(d,c.dk)||!(d.allowedPosts||[]).includes(c.pid)||!(d.allowedPosts||[]).includes(JOUR_DE[c.pid])) return;
+        if(docHasNoChain(d,JOUR_DE[c.pid])) return;
+        if(isUnavailDow(d,c.dk)&&!docGetRules(d,'night_on_unavail').some(r=>(r.posts||[]).includes(c.pid))) return;
+        const absent=dk=>indispos.some(i=>i.docId===d.id&&dk>=i.start&&dk<=i.end&&i.type!=='pref'&&i.type!=='unavail_post');
+        if(absent(c.dk)||(cp.overnight&&absent(_adjShiftDk(c.dk,1)))) return;
+        if(indispos.some(i=>i.docId===d.id&&i.type==='unavail_post'&&c.dk>=i.start&&c.dk<=i.end&&prefMatchesPost(i.posteId,c.pid))) return;
+        if(!demande.some(x=>x.dk===c.dk&&x.pid===JOUR_DE[c.pid])) return;
+        if((cp.overnight&&nextDayUnavailBlocks(d,_adjShiftDk(c.dk,1)))||nightOnUnavailBlocks(d,c.pid,c.dk)||reposConflictsFuture(d,c.dk,cp)||gardeSpacingBlocks(d,c.pid,c.dk)||forbidPostDowBlocks(d,c.pid,c.dk)) return;
+        if(SPECIAL_DATES_POSTS.includes(c.pid)&&specialDateExcludedDocs(c.dk).has(d.id)) return;
+        chainables.push([ci,d.id]); }); });
+    const souhaits=[]; indispos.filter(i=>i.type==='pref').forEach(i=>demande.forEach((c,ci)=>{ if(c.dk>=i.start&&c.dk<=i.end&&(!i.posteId||prefMatchesPost(i.posteId,c.pid))) souhaits.push([ci,i.docId]); }));
+    // contexte figé : les 3 jours avant et après la période (tous les postes) + cases figées de la période
+    const autour=[]; [-3,-2,-1].map(k=>_adjShiftDk(jours[0],k)).concat([1,2,3].map(k=>_adjShiftDk(jours[jours.length-1],k))).forEach(dk=>{
+      Object.entries(shifts[dk]||{}).forEach(([pid,did])=>{ if(did!=null) autour.push({dk,pid,doc:did}); });
+      Object.entries(sharedShifts[dk]||{}).forEach(([pid,sh])=>{ if(sh&&sh.docId2!=null) autour.push({dk,pid,doc:sh.docId2}); }); });
+    fixes.forEach(f=>autour.push(f));
+    // heures : part fixe de la période (congés crédités, postes exceptionnels, cases figées) et cible du gestionnaire
+    const fixeH={}; months.forEach(([y,m])=>{ const hm=computeHoursForMonthWorked(y,m); Object.entries(hm).forEach(([id,h])=>{ fixeH[id]=(fixeH[id]||0)+(h||0); }); });
+    const semaines=jours.length/7;
+    const docsInfo=actifs.map(d=>({ id:d.id, role:d.role, h:+d.targetHours||0,
+      parMois:months.map(([y,m])=>{ let q=null; try{ q=gardeQuotaMonth(d,y,m); }catch(e){} return {wd:q?q.wdPerMonth:null,we:q?q.wePerMonth:null}; }),
+      cap:(function(){ try{ return docGardesCapTable(d); }catch(e){ return null; } })(), maxG:docMaxGardesCap(d), fixeH:Math.round((fixeH[d.id]||0)*100)/100,
+      // cible : celle du trimestre ; pour un mois seul, sa part au prorata des jours disponibles (docMonthTarget reporterait sur le
+      // dernier mois du trimestre tout ce qui n'a pas été fait avant, ce qui fausserait l'équilibre des heures du solveur)
+      cibleQ:(function(){ try{ const y=months[0][0], m=months[0][1], qT=docQuarterTarget(d,y,m)||0; if(months.length>1) return qT;
+        const av=availDaysByMonth(d,y), q0=Math.floor(m/3)*3, tot=(av[q0]||0)+(av[q0+1]||0)+(av[q0+2]||0); return tot?Math.round(qT*(av[m]||0)/tot*100)/100:0; }catch(e){ return 0; } })(),
+      maxH:(+d.targetHours||0)*semaines+30*semaines/13, fenetreDoublure:doublureWindow(d), regles:(d.rules||[]).filter(r=>r&&r.active!==false), allowed:d.allowedPosts||[],
+      enContrat:jours.filter(dk=>isInContract(d,dk)).length }));
+    const E={ mois:pref, debut:jours[0], jours, info, demande, elig, forcables, chainables, souhaits, autour, fixes, docs:docsInfo,
+      heures:demande.map(c=>postHours(getPost(c.pid),c.dk)), vendredi:demande.map(c=>dowOf(c.dk)===5&&!isHoliday(c.dk)),
+      dow:Object.fromEntries(jours.map(dk=>[dk,dowOf(dk)])), ferie:jours.filter(dk=>isHoliday(dk)),
+      noms:actifs.map(d=>({local_id:d.id,lastname:d.lastname||'',special_case:!!d.specialCase,extra_profile:{unavailDow:d.unavailDow||[]},contract_start:d.contractStart||null,contract_end:d.contractEnd||null})),
+      indispos:indispos.map(i=>({docId:i.docId,start:i.start,end:i.end,type:i.type,posteId:i.posteId||null})) };
+    const depart={objectif:Infinity,affectations:{},trous:[],forces:0,demi:demiAvant.map(o=>({dk:o.dk,pid:o.pid,doc:o.doc,heures:o.heures,second:o.second}))};
+    demande.forEach(c=>{ const d=reel[c.dk][c.pid]; if(d!=null) (depart.affectations[c.dk]=depart.affectations[c.dk]||{})[c.pid]=d; });
+    return {E,depart,reel,jours,demande,demiAvant};
+  } finally {
+    jours.forEach(dk=>{ if(sauveShifts[dk]===undefined) delete shifts[dk]; else shifts[dk]=sauveShifts[dk]; });
+    const sh=JSON.parse(sauveShared); Object.keys(sharedShifts).forEach(k=>delete sharedShifts[k]); Object.assign(sharedShifts,sh); cy=sCy; cm=sCm;
+  }
+}
+function solveurOuvrir(){
+  if(!SOLVEUR_ON) return;
+  if(_jlxModeFiches()){ alert('Le solveur est réservé au planning de la Citadelle.'); return; }
+  if(!/^https?:$/.test(location.protocol)||typeof Worker==='undefined'){ alert('Le solveur ne fonctionne que dans le gestionnaire en ligne (il ne peut pas être lancé depuis un fichier ouvert sur l\'ordinateur).'); return; }
+  if(_solv.worker){ openModal('solveur-modal'); return; }
+  const months=solveurMoisPeriode(); document.getElementById('solv-periode').textContent=solveurLibellePeriode(months);
+  ['solv-etape-calcul','solv-etape-brouillon'].forEach(id=>document.getElementById(id).style.display='none'); document.getElementById('solv-etape-choix').style.display='';
+  closeModal('progress-modal'); openModal('solveur-modal');
+}
+function solveurLancer(){
+  const months=solveurMoisPeriode(), duree=+document.getElementById('solv-duree').value||1800;
+  document.getElementById('solv-etape-choix').style.display='none'; document.getElementById('solv-etape-calcul').style.display='';
+  document.getElementById('solv-msg').textContent='Préparation des données (quelques secondes)…'; document.getElementById('solv-fill').style.width='0%'; document.getElementById('solv-detail').textContent='';
+  setTimeout(()=>{
+    let X; try{ X=solveurExtraire(months); }catch(e){ console.error('[SOLVEUR] extraction',e); document.getElementById('solv-msg').textContent='❌ Préparation impossible : '+(e&&e.message||e); return; }
+    if(!X.demande.length){ document.getElementById('solv-msg').textContent='Aucune case à recalculer sur cette période (tout est figé ou passé).'; return; }
+    _solv={worker:null,meilleur:null,X,months,t0:Date.now(),duree,brouillon:null,arret:false,essais:0,gains:0};
+    let w; try{ w=new Worker(SOLVEUR_DOSSIER+'worker.js'); }catch(e){ document.getElementById('solv-msg').textContent='❌ Le solveur n\'a pas pu démarrer : '+(e&&e.message||e); return; }
+    _solv.worker=w;
+    const minuteur=setInterval(()=>{ if(!_solv.worker){ clearInterval(minuteur); return; } const s=(Date.now()-_solv.t0)/1000; document.getElementById('solv-fill').style.width=Math.min(100,s/duree*100).toFixed(1)+'%'; },1000);
+    w.onmessage=ev=>{ const m=ev.data||{};
+      if(m.type==='pret') document.getElementById('solv-msg').textContent='Calcul en cours — '+X.demande.length+' cases, '+solveurLibellePeriode(months);
+      else if(m.type==='progres'){ if(m.meilleur) _solv.meilleur=m.meilleur; _solv.essais=m.essais||_solv.essais; _solv.gains=m.gains||_solv.gains;
+        const mn=s=>Math.floor(s/60)+' min '+String(Math.round(s%60)).padStart(2,'0')+' s';
+        document.getElementById('solv-detail').innerHTML='Écoulé : '+mn(m.ecoule||0)+' / '+mn(duree)+' · passage '+(m.passage||1)+', fenêtre du '+escHtml(formatDate(m.fenetre?m.fenetre[0]:''))
+          +' au '+escHtml(formatDate(m.fenetre?m.fenetre[1]:''))+'<br>Améliorations trouvées : '+(_solv.gains||0)+' sur '+(_solv.essais||0)+' fenêtres · postes vides : '+(m.trous!=null?m.trous:'?')
+          +(m.aReprendre?' · cases du planning actuel encore à revoir (médecin qui ne peut plus les tenir) : '+m.aReprendre:'')+(m.demi?' · demi-gardes de WE : '+m.demi:''); }
+      else if(m.type==='fin'){ clearInterval(minuteur); if(m.meilleur) _solv.meilleur=m.meilleur; w.terminate(); _solv.worker=null; solveurTerminer(); }
+      else if(m.type==='erreur'){ clearInterval(minuteur); w.terminate(); _solv.worker=null; console.error('[SOLVEUR]',m.message); document.getElementById('solv-msg').textContent='❌ Erreur du solveur : '+m.message; } };
+    w.onerror=e=>{ clearInterval(minuteur); try{ w.terminate(); }catch(_){ } _solv.worker=null; document.getElementById('solv-msg').textContent='❌ Le solveur s\'est arrêté : '+(e&&e.message||'erreur inconnue'); };
+    w.postMessage({type:'lancer',E:X.E,depart:X.depart,dureeS:duree,taille:7,pas:4,limiteS:duree<=600?60:150});
+  },50);
+}
+function solveurArreter(garder){
+  if(_solv.worker){ try{ _solv.worker.terminate(); }catch(e){} _solv.worker=null; }
+  if(!garder){ closeModal('solveur-modal'); showToast('Calcul du solveur abandonné — planning inchangé'); return; }
+  solveurTerminer();
+}
+// Brouillon : planning actuel de la période, cases recalculées remplacées par la solution, demi-gardes posées par le modèle.
+function solveurBrouillon(sol){
+  const X=_solv.X, AUTO='demi-garde-we', nouv={}, partages={};
+  X.jours.forEach(dk=>{ nouv[dk]=Object.assign({},X.reel[dk]); });
+  X.demande.forEach(c=>{ const d=((sol.affectations||{})[c.dk]||{})[c.pid]; if(d!=null) nouv[c.dk][c.pid]=d; });
+  X.jours.forEach(dk=>{ const d=sharedShifts[dk]; if(!d) return; Object.keys(d).forEach(pid=>{ if(!(d[pid]&&d[pid].auto===AUTO&&!isShiftLocked(dk,pid))) (partages[dk]=partages[dk]||{})[pid]=d[pid]; }); });
+  (sol.demi||[]).forEach(o=>{ if(o.second==null||!nouv[o.dk]) return; const tot=postHours(getPost(o.pid),o.dk)||24; nouv[o.dk][o.pid]=o.doc;
+    (partages[o.dk]=partages[o.dk]||{})[o.pid]={docId2:o.second,mode:'split',h1:o.heures,h2:Math.max(0,Math.round((tot-o.heures)*100)/100),auto:AUTO}; });
+  return {shifts:nouv,partages};
+}
+function solveurMesurer(variante){ // mesures du planning de la période (variante = {shifts, partages} ou null pour l'actuel)
+  const X=_solv.X, months=_solv.months, sS={}, sP={}, sCy=cy, sCm=cm;
+  X.jours.forEach(dk=>{ sS[dk]=shifts[dk]; sP[dk]=sharedShifts[dk]; });
+  const res={vides:0,erreurs:0,avert:0,souhaits:0,souhaitsTot:0,ecartH:0,detailErr:{}};
+  try{
+    if(variante) X.jours.forEach(dk=>{ shifts[dk]=Object.assign({},variante.shifts[dk]||{}); if(variante.partages[dk]) sharedShifts[dk]=JSON.parse(JSON.stringify(variante.partages[dk])); else delete sharedShifts[dk]; });
+    try{ res.vides=checkStaffingMinimum(months).length; }catch(e){}
+    months.forEach(([y,m])=>{ cy=y; cm=m; getAllConflicts().forEach(x=>{ if(x.type==='err'){ res.erreurs++; res.detailErr[x.title]=(res.detailErr[x.title]||0)+1; } else if(x.type==='warn') res.avert++; }); });
+    const prefs=indispos.filter(i=>i.type==='pref'&&i.end>=X.jours[0]&&i.start<=X.jours[X.jours.length-1]); res.souhaitsTot=prefs.length;
+    res.souhaits=prefs.filter(i=>X.jours.some(dk=>dk>=i.start&&dk<=i.end&&Object.entries(shifts[dk]||{}).some(([p,v])=>v===i.docId&&(!i.posteId||prefMatchesPost(i.posteId,p))))).length;
+    const h={}; months.forEach(([y,m])=>{ const hm=computeHoursForMonthWorked(y,m); Object.entries(hm).forEach(([id,v])=>{ h[id]=(h[id]||0)+(v||0); }); });
+    X.E.docs.forEach(D=>{ if(D.cibleQ>0) res.ecartH+=Math.abs((h[D.id]||0)-D.cibleQ); }); res.ecartH=Math.round(res.ecartH);
+  } finally {
+    X.jours.forEach(dk=>{ if(sS[dk]===undefined) delete shifts[dk]; else shifts[dk]=sS[dk]; if(sP[dk]===undefined) delete sharedShifts[dk]; else sharedShifts[dk]=sP[dk]; }); cy=sCy; cm=sCm;
+  }
+  return res;
+}
+function solveurTerminer(){
+  document.getElementById('solv-etape-calcul').style.display='none'; document.getElementById('solv-etape-brouillon').style.display='';
+  const sol=_solv.meilleur, bilan=document.getElementById('solv-bilan');
+  if(!sol){ bilan.innerHTML='<p style="font-size:13px;">Le solveur n\'a pas trouvé de planning meilleur que le planning actuel dans le temps donné. Rien n\'est changé.</p>'; document.getElementById('solv-garder').style.display='none'; return; }
+  document.getElementById('solv-garder').style.display='';
+  const B=solveurBrouillon(sol); _solv.brouillon=B;
+  const av=solveurMesurer(null), ap=solveurMesurer(B);
+  const nm=id=>{ const d=docs.find(x=>x.id===id); return d?d.lastname:(id==null?'—':'#'+id); };
+  const chg=[]; _solv.X.jours.forEach(dk=>{ const a=shifts[dk]||{}, b=B.shifts[dk]||{}; new Set(Object.keys(a).concat(Object.keys(b))).forEach(pid=>{ const sa=sharedOn(dk,pid), sb=(B.partages[dk]||{})[pid];
+    const ta=a[pid]!=null?nm(a[pid])+(sa?'/'+nm(sa.docId2):''):'—', tb=b[pid]!=null?nm(b[pid])+(sb&&sb.docId2!=null?'/'+nm(sb.docId2):''):'—'; if(ta!==tb) chg.push({dk,pid,ta,tb}); }); });
+  const ligne=(lbl,a,b,mieuxSiMoins)=>{ const ok=mieuxSiMoins?b<a:b>a, ko=mieuxSiMoins?b>a:b<a;
+    return '<tr><td style="padding:3px 8px;">'+lbl+'</td><td style="padding:3px 8px;text-align:right;">'+a+'</td><td style="padding:3px 8px;text-align:right;font-weight:700;color:'+(ok?'var(--ok)':ko?'var(--err)':'var(--t1)')+';">'+b+'</td></tr>'; };
+  const pn=pid=>{ const p=getPost(pid); return p?(p.name||pid):pid; };
+  bilan.innerHTML='<p style="font-size:12px;color:var(--t2);margin:0 0 8px;">Brouillon du solveur pour <b>'+escHtml(solveurLibellePeriode(_solv.months))+'</b> : <b>'+chg.length+'</b> case(s) changée(s). Rien n\'est encore modifié.</p>'
+    +'<table style="border-collapse:collapse;font-size:12px;width:100%;margin-bottom:10px;"><tr style="color:var(--t3);font-size:11px;"><td style="padding:3px 8px;"></td><td style="padding:3px 8px;text-align:right;">Planning actuel</td><td style="padding:3px 8px;text-align:right;">Brouillon du solveur</td></tr>'
+    +ligne('Postes obligatoires vides',av.vides,ap.vides,true)+ligne('Erreurs (onglet Alertes)',av.erreurs,ap.erreurs,true)+ligne('Avertissements',av.avert,ap.avert,true)
+    +ligne('Souhaits validés tenus (sur '+av.souhaitsTot+')',av.souhaits,ap.souhaits,false)+ligne('Écart total aux cibles d\'heures (h)',av.ecartH,ap.ecartH,true)+'</table>'
+    +(Object.keys(ap.detailErr).length?'<p style="font-size:11px;color:var(--t3);margin:0 0 8px;">Erreurs du brouillon : '+Object.entries(ap.detailErr).map(([k,v])=>escHtml(k)+' ('+v+')').join(' · ')+'</p>':'')
+    +'<div style="max-height:34vh;overflow-y:auto;border:1px solid var(--line);border-radius:8px;"><table style="border-collapse:collapse;font-size:11.5px;width:100%;">'
+    +chg.slice(0,400).map(c=>'<tr><td style="padding:2px 8px;white-space:nowrap;">'+escHtml(formatDate(c.dk))+'</td><td style="padding:2px 8px;">'+escHtml(pn(c.pid))+'</td><td style="padding:2px 8px;color:var(--t3);">'+escHtml(c.ta)+'</td><td style="padding:2px 8px;">→ <b>'+escHtml(c.tb)+'</b></td></tr>').join('')
+    +'</table></div>'+(chg.length>400?'<p style="font-size:11px;color:var(--t3);">… et '+(chg.length-400)+' autre(s).</p>':'');
+}
+function solveurGarder(){
+  const B=_solv.brouillon; if(!B) return;
+  _solv.X.jours.forEach(dk=>{ shifts[dk]=Object.assign({},B.shifts[dk]||{}); if(B.partages[dk]&&Object.keys(B.partages[dk]).length) sharedShifts[dk]=JSON.parse(JSON.stringify(B.partages[dk])); else delete sharedShifts[dk]; });
+  saveShifts(); render(); closeModal('solveur-modal'); _solv.brouillon=null;
+  showToast('✅ Planning du solveur gardé (non publié)',3500);
+}
+function solveurAnnuler(){ _solv.brouillon=null; closeModal('solveur-modal'); showToast('Brouillon du solveur abandonné — planning inchangé'); }
 async function confirmGenerate(){
   if(_jlxModeFiches()) return _jlxGenererGenerique(); // [2026-10-27 lot 6] moteur générique (le moteur Citadelle n'est pas utilisé hors Citadelle)
   try{ if(_extendOpenLeaves()) lsSet('planningURG_indispos',JSON.stringify(indispos)); }catch(e){} // [2026-09-27] congés longs : horizon glissant
