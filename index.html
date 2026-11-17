@@ -13543,10 +13543,12 @@ function solveurExtraire(months){
     const docsInfo=actifs.map(d=>({ id:d.id, role:d.role, h:+d.targetHours||0,
       parMois:months.map(([y,m])=>{ let q=null; try{ q=gardeQuotaMonth(d,y,m); }catch(e){} return {wd:q?q.wdPerMonth:null,we:q?q.wePerMonth:null}; }),
       cap:(function(){ try{ return docGardesCapTable(d); }catch(e){ return null; } })(), maxG:docMaxGardesCap(d), fixeH:Math.round((fixeH[d.id]||0)*100)/100,
-      // cible : celle du trimestre ; pour un mois seul, sa part au prorata des jours disponibles (docMonthTarget reporterait sur le
-      // dernier mois du trimestre tout ce qui n'a pas été fait avant, ce qui fausserait l'équilibre des heures du solveur)
-      cibleQ:(function(){ try{ const y=months[0][0], m=months[0][1], qT=docQuarterTarget(d,y,m)||0; if(months.length>1) return qT;
-        const av=availDaysByMonth(d,y), q0=Math.floor(m/3)*3, tot=(av[q0]||0)+(av[q0+1]||0)+(av[q0+2]||0); return tot?Math.round(qT*(av[m]||0)/tot*100)/100:0; }catch(e){ return 0; } })(),
+      // cible (décisions du Dr Sorce, 17/11) : celle du gestionnaire, RETARD DES PÉRIODES PRÉCÉDENTES COMPRIS (celui qui a moins
+      // travaillé devient prioritaire) — trimestre : docQuarterTarget ; mois : docMonthTarget. Assistant sous contrat daté : cible sur
+      // la DURÉE DU CONTRAT (souvent 6 mois ou 1 an, à cheval sur deux années) : attendu du début du contrat à la fin de la période,
+      // moins les heures faites depuis le début du contrat (solveurCibleContrat).
+      cibleQ:(function(){ try{ const cc=solveurCibleContrat(d,jours[0],jours[jours.length-1]); if(cc!=null) return cc;
+        return months.length>1?(docQuarterTarget(d,months[0][0],months[0][1])||0):(docMonthTarget(d,months[0][0],months[0][1])||0); }catch(e){ return 0; } })(),
       maxH:(+d.targetHours||0)*semaines+30*semaines/13, fenetreDoublure:doublureWindow(d), regles:(d.rules||[]).filter(r=>r&&r.active!==false), allowed:d.allowedPosts||[],
       enContrat:jours.filter(dk=>isInContract(d,dk)).length }));
     const E={ mois:pref, debut:jours[0], jours, info, demande, elig, forcables, chainables, souhaits, autour, fixes, docs:docsInfo,
@@ -13561,6 +13563,23 @@ function solveurExtraire(months){
     jours.forEach(dk=>{ if(sauveShifts[dk]===undefined) delete shifts[dk]; else shifts[dk]=sauveShifts[dk]; });
     const sh=JSON.parse(sauveShared); Object.keys(sharedShifts).forEach(k=>delete sharedShifts[k]); Object.assign(sharedShifts,sh); cy=sCy; cm=sCm;
   }
+}
+// [2026-11-17 SOLVEUR] Cible d'heures d'un ASSISTANT sous contrat daté, sur la durée du contrat (décision du Dr Sorce du 17/11) :
+// attendu = somme des cibles annuelles du contrat (annualTarget, prorata des semaines de contrat, 46 sem. travaillées) réparti au
+// prorata des jours ouvrables du contrat ; cible de la période = attendu du début du contrat à la fin de la période − heures faites
+// depuis le début du contrat jusqu'à la veille de la période (retard compris, années précédentes comprises). null = pas concerné.
+function solveurCibleContrat(d,debut,fin){
+  if(!d||!isAssistantRole(d.role)||!d.contractStart||!d.contractEnd||!d.targetHours) return null;
+  const cs=d.contractStart, ce=d.contractEnd; if(cs>fin||ce<debut) return 0;
+  const ouvres=(a,b)=>{ let n=0; for(let k=a;k<=b;k=_adjShiftDk(k,1)){ const w=dowOf(k); if(w!==0&&w!==6&&!isHoliday(k)) n++; } return n; };
+  const tousJ=ouvres(cs,ce); if(!tousJ) return 0;
+  let attendu=0; for(let y=+cs.slice(0,4);y<=+ce.slice(0,4);y++) attendu+=annualTarget(d,y)||0;
+  const jusque=attendu*ouvres(cs,fin<ce?fin:ce)/tousJ;
+  let fait=0; const parAn={};
+  for(let k=cs.slice(0,7)+'-01';k<debut.slice(0,7)+'-01';){ const y=+k.slice(0,4), m=+k.slice(5,7)-1;
+    if(!parAn[y]) parAn[y]=hoursYearByMonth(y).hours; fait+=((parAn[y][d.id]||[])[m])||0;
+    k=m===11?(y+1)+'-01-01':y+'-'+pad(m+2)+'-01'; }
+  return Math.max(0,Math.round(jusque-fait));
 }
 function solveurOuvrir(){
   if(!SOLVEUR_ON) return;

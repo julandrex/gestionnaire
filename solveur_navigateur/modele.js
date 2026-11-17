@@ -15,7 +15,7 @@
   const WEQ = ['we-coord', 'we-satmu', 'we-smur-sat', 'we-smur-sun'], VN = ['coord-n', 'smur-n', 'satmu-n'], VS = ['pm14', 'pm16'], SMUR = ['smur-n', 'we-smur-sat', 'we-smur-sun'];
   const DOUB = ['doub-coord', 'doub-smur', 'doubl-u-ad', 'doubl-u-bc'];
   const POIDS = { souhait: 1500, prioPH: 2, prioMG: 1, prioAsst: 4, quotaSeul: 5, vendEq: 8, trou: 10000, quota: 2000, oblig: 200, smur: 60, smurSous: 30, sem: 10, weT: 12, weM: 3, vend2: 6, vendSoir: 4,
-    chaine: 30, toujours: 30, demi: 250, heure: 2, doubSoft: 5, equite: 1, smurnA: 500 };
+    chaine: 30, toujours: 30, demi: 250, stabilite: 1, heure: 2, doubSoft: 5, equite: 1, smurnA: 500 };
   const dayN = dk => Math.round(new Date(dk + 'T12:00:00Z').getTime() / 864e5);
   const isoWeek = dk => { const d = new Date(dk + 'T12:00:00Z'); const t = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())); const n = (t.getUTCDay() + 6) % 7; t.setUTCDate(t.getUTCDate() - n + 3); return t.getUTCFullYear() * 100 + Math.ceil(((t - new Date(Date.UTC(t.getUTCFullYear(), 0, 1))) / 864e5 + 1) / 7); };
   const nxt = (dk, k) => { const t = new Date(dk + 'T12:00:00Z'); t.setUTCDate(t.getUTCDate() + k); return t.toISOString().slice(0, 10); };
@@ -169,6 +169,9 @@
     // 6. souhaits et départage
     const souh = new Set(E.souhaits.map(([ci, d]) => ci + '|' + d));
     xv.forEach(v => addObj(v.n, souh.has(v.ci + '|' + v.d) ? -W.souhait : ((v.k * 7919) % 97 / 1000 + 0.001)));
+    // [17/11] STABILITÉ (option) : chaque case qui quitte le médecin du planning de RÉFÉRENCE (le départ, pas la dernière solution)
+    // coûte W.stabilite ; plus fort que le départage (≤ 0,098), bien plus faible que les vrais critères → pas d'échange gratuit
+    if (opts.ref && W.stabilite > 0) xv.forEach(v => { if (((opts.ref[v.c.dk] || {})[v.c.pid]) !== v.d) addObj(v.n, W.stabilite); });
     const NL = '\n';
     const objTxt = Object.entries(obj).filter(([, c]) => c !== 0).map(([n, c]) => (c < 0 ? '- ' : '+ ') + Math.abs(Math.round(c * 10000) / 10000) + ' ' + n);
     const lpBrut = 'Minimize' + NL + ' obj: ' + objTxt.join(' ').replace(/^\+ /, '') + NL + 'Subject To' + NL + L.join(NL) + NL + 'Bounds' + NL + gen.map(g => ' 0 <= ' + g).join(NL) + NL + 'Binary' + NL + ' ' + bin.join(NL + ' ') + NL + 'End' + NL;
@@ -208,7 +211,7 @@
       passage++; let gain = 0;
       for (const [deb, fin] of fen) {
         if (reste() <= 5000 || (o.arreter && o.arreter())) break;
-        const mod = construire(E, { init: best, deb, fin, poids: o.poids });
+        const mod = construire(E, { init: best, deb, fin, poids: o.poids, ref: (o.depart && o.depart.affectations) || null });
         const t1 = maintenant(); let r;
         try { r = o.highs.solve(mod.lp, Object.assign({ time_limit: Math.max(10, Math.min(limite, Math.floor(reste() / 1000) - 2)), mip_rel_gap: 0.002 }, o.options || {})); }
         catch (e) { if (o.progres) o.progres({ type: 'erreur', fenetre: [deb, fin], message: String(e && e.message || e).slice(0, 200) }); continue; }
