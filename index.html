@@ -13578,18 +13578,19 @@ function solveurLancer(){
   setTimeout(()=>{
     let X; try{ X=solveurExtraire(months); }catch(e){ console.error('[SOLVEUR] extraction',e); document.getElementById('solv-msg').textContent='❌ Préparation impossible : '+(e&&e.message||e); return; }
     if(!X.demande.length){ document.getElementById('solv-msg').textContent='Aucune case à recalculer sur cette période (tout est figé ou passé).'; return; }
-    _solv={worker:null,meilleur:null,X,months,t0:Date.now(),duree,brouillon:null,arret:false,essais:0,gains:0};
+    _solv={worker:null,meilleur:null,X,months,t0:Date.now(),duree,brouillon:null,arret:false,essais:0,gains:0,impossibles:0};
     let w; try{ w=new Worker(SOLVEUR_DOSSIER+'worker.js'); }catch(e){ document.getElementById('solv-msg').textContent='❌ Le solveur n\'a pas pu démarrer : '+(e&&e.message||e); return; }
     _solv.worker=w;
     const minuteur=setInterval(()=>{ if(!_solv.worker){ clearInterval(minuteur); return; } const s=(Date.now()-_solv.t0)/1000; document.getElementById('solv-fill').style.width=Math.min(100,s/duree*100).toFixed(1)+'%'; },1000);
     w.onmessage=ev=>{ const m=ev.data||{};
       if(m.type==='pret') document.getElementById('solv-msg').textContent='Calcul en cours — '+X.demande.length+' cases, '+solveurLibellePeriode(months);
-      else if(m.type==='progres'){ if(m.meilleur) _solv.meilleur=m.meilleur; _solv.essais=m.essais||_solv.essais; _solv.gains=m.gains||_solv.gains;
+      else if(m.type==='progres'){ if(m.meilleur&&isFinite(m.meilleur.objectif)) _solv.meilleur=m.meilleur; _solv.essais=m.essais||_solv.essais; _solv.gains=m.gains||_solv.gains;
+        if(/infeasible/i.test(String(m.statut||''))) _solv.impossibles=(_solv.impossibles||0)+1;   // [17/11] fenêtre sans solution
         const mn=s=>Math.floor(s/60)+' min '+String(Math.round(s%60)).padStart(2,'0')+' s';
         document.getElementById('solv-detail').innerHTML='Écoulé : '+mn(m.ecoule||0)+' / '+mn(duree)+' · passage '+(m.passage||1)+', fenêtre du '+escHtml(formatDate(m.fenetre?m.fenetre[0]:''))
           +' au '+escHtml(formatDate(m.fenetre?m.fenetre[1]:''))+'<br>Améliorations trouvées : '+(_solv.gains||0)+' sur '+(_solv.essais||0)+' fenêtres · postes vides : '+(m.trous!=null?m.trous:'?')
           +(m.aReprendre?' · cases du planning actuel encore à revoir (médecin qui ne peut plus les tenir) : '+m.aReprendre:'')+(m.demi?' · demi-gardes de WE : '+m.demi:''); }
-      else if(m.type==='fin'){ clearInterval(minuteur); if(m.meilleur) _solv.meilleur=m.meilleur; w.terminate(); _solv.worker=null; solveurTerminer(); }
+      else if(m.type==='fin'){ clearInterval(minuteur); if(m.meilleur&&isFinite(m.meilleur.objectif)) _solv.meilleur=m.meilleur; w.terminate(); _solv.worker=null; solveurTerminer(); }   // [17/11] le départ inchangé (objectif infini) n'est pas un brouillon
       else if(m.type==='erreur'){ clearInterval(minuteur); w.terminate(); _solv.worker=null; console.error('[SOLVEUR]',m.message); document.getElementById('solv-msg').textContent='❌ Erreur du solveur : '+m.message; } };
     w.onerror=e=>{ clearInterval(minuteur); try{ w.terminate(); }catch(_){ } _solv.worker=null; document.getElementById('solv-msg').textContent='❌ Le solveur s\'est arrêté : '+(e&&e.message||'erreur inconnue'); };
     w.postMessage({type:'lancer',E:X.E,depart:X.depart,dureeS:duree,taille:7,pas:4,limiteS:duree<=600?60:150});
@@ -13630,7 +13631,12 @@ function solveurMesurer(variante){ // mesures du planning de la période (varian
 function solveurTerminer(){
   document.getElementById('solv-etape-calcul').style.display='none'; document.getElementById('solv-etape-brouillon').style.display='';
   const sol=_solv.meilleur, bilan=document.getElementById('solv-bilan');
-  if(!sol){ bilan.innerHTML='<p style="font-size:13px;">Le solveur n\'a pas trouvé de planning meilleur que le planning actuel dans le temps donné. Rien n\'est changé.</p>'; document.getElementById('solv-garder').style.display='none'; return; }
+  if(!sol){
+    const tout=_solv.essais&&(_solv.impossibles||0)>=_solv.essais;
+    bilan.innerHTML=tout
+      ?'<p style="font-size:13px;line-height:1.55;">❌ <b>Le solveur n\'a pu calculer aucune fenêtre</b> à partir du planning actuel ('+_solv.essais+' fenêtre(s) sans solution respectant les règles strictes). Cela arrive quand le planning est très incomplet ou très éloigné des règles, par exemple quand les <b>assistants de la période ne sont pas encore encodés</b> ou que des contrats se terminent. Complétez les fiches puis relancez. Rien n\'est changé.</p>'
+      :'<p style="font-size:13px;">Le solveur n\'a pas trouvé de planning meilleur que le planning actuel dans le temps donné. Rien n\'est changé.</p>';
+    document.getElementById('solv-garder').style.display='none'; return; }
   document.getElementById('solv-garder').style.display='';
   const B=solveurBrouillon(sol); _solv.brouillon=B;
   const av=solveurMesurer(null), ap=solveurMesurer(B);

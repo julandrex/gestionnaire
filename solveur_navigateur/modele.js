@@ -134,7 +134,7 @@
       const dw = {}; vs.filter(v => DOUB.includes(v.c.pid)).forEach(v => (dw[isoWeek(v.c.dk)] = dw[isoWeek(v.c.dk)] || []).push(v)); Object.values(dw).forEach(x => { if (x.length > 3) C(somme(x), '<= 3'); });
       if (D.role === 'Assistant SMUR ok') { const x = vs.filter(v => v.c.pid === 'smur-j'); const cap = Math.ceil(4 * E.mois.length / 3); if (x.length > cap) C(somme(x), '<= ' + cap); }
     });
-    reglesV8({ E, W, xv, parDoc, C, addObj, gen, bin, somme, isoWeek, dayN, nomDe, NOMS, I, mi, M, enPeriode, log });
+    reglesV8({ E, W, xv, parDoc, C, addObj, gen, bin, somme, isoWeek, dayN, nomDe, NOMS, I, mi, M, enPeriode, log, tient: I0d ? tient : null });
     reglesV10({ E, W, xv, parDoc, C, addObj, gen, bin, somme, NOMS, mi, M, enPeriode, log });
     // 4. équilibres des nuits du vendredi (au prorata des heures)
     const vnAll = xv.filter(v => !v.force && E.vendredi[v.ci] && VN.includes(v.c.pid)); const totVN = E.demande.filter((c, ci) => E.vendredi[ci] && VN.includes(c.pid)).length;
@@ -264,7 +264,10 @@
       const fx = E.autour.filter(a => a.doc === d && WEP.includes(a.pid));
       const deux = []; const poids = p => p === 'we-doublure' ? 0.5 : 1, terme = x => x.map(v => (poids(v.c.pid) === 1 ? '' : '0.5 ') + v.n).join(' + ');
       M.forEach(m => { const x = we.filter(v => v.c.m === m); const f = fx.filter(a => mi(a.dk) === m).reduce((s, a) => s + poids(a.pid), 0); if (!x.length) return;
-        C(terme(x), '<= ' + Math.max(0, 2 - f)); const z = aux(W.we2, true); C(terme(x) + ' - 2 ' + z, '<= ' + (1.5 - f)); deux.push(z); });
+        // [17/11] tolérance du départ : si le planning de départ dépasse déjà 3,5 WE ce mois-ci (ex. T2 sans assistants : 5 WE),
+        // la ligne « z = 1 dès 2 WE » doit rester satisfaisable avec z = 1
+        const ti = X.tient ? x.filter(X.tient).reduce((s, v) => s + poids(v.c.pid), 0) : 0;
+        C(terme(x), '<= ' + Math.max(0, 2 - f)); const z = aux(W.we2, true); C(terme(x) + ' - 2 ' + z, '<= ' + Math.max(1.5 - f, ti - 2)); deux.push(z); });
       if (deux.length > 1) { const r = aux(W.weRepet, false); C(deux.join(' + ') + ' - ' + r, '<= 1'); }
       const parWe = {}; we.forEach(v => (parWe[weekendDe(v.c.dk)] = parWe[weekendDe(v.c.dk)] || []).push(v));
       const fixWe = new Set(fx.map(a => weekendDe(a.dk)));
