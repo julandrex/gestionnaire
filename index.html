@@ -6652,6 +6652,12 @@ function _ctrlPaireLegitime(doc,p1,p2){
   try{ return docGetRules(doc,'linked_post').some(function(r){ return (r.triggerPost===p1&&r.linkedPost===p2)||(r.triggerPost===p2&&r.linkedPost===p1); }); }
   catch(e){ return false; }
 }
+// [2026-11-18 DEMI-GARDE-WE] Le médecin tient-il, ce jour-là, la demi-garde de JOUR (titulaire d'un poste scindé) d'un poste que sa règle
+// de fiche « Demi-garde WE de jour » (we_half_day_month) lui ouvre ?
+function _demiGardeOuverte(doc,pid,dk){
+  const sh=sharedOn(dk,pid); if(!sh||sh.mode==='double'||(shifts[dk]||{})[pid]!==doc.id) return false;
+  return (doc.rules||[]).some(function(r){ return r&&r.type==='we_half_day_month'&&r.active!==false&&(r.posts||[]).includes(pid); });
+}
 // Relit `shifts` entre deux jours compris ('AAAA-MM-JJ' ; null = sans borne) et renvoie la liste des anomalies
 // [{code,titre,dk,pid,docId,texte}]. Ne modifie rien.
 function controlerPlanning(dkDebut,dkFin){
@@ -6676,7 +6682,9 @@ function controlerPlanning(dkDebut,dkFin){
         else if(essai(function(){ return gardeFinitHorsContrat(doc,pid,dk); })) aj('contrat',pid,'garde de nuit finissant après la fin du contrat');
         if(!post){ aj('ferme',pid,'poste inconnu'); return; }
         if(essai(function(){ return !postActiveOnDay(post,dk); })) aj('ferme',pid,'');
-        if(!(doc.allowedPosts||[]).includes(pid)) aj('nonAutorise',pid,'');
+        // [2026-11-18 DEMI-GARDE-WE] la demi-garde de jour d'un poste scindé, ouverte par la règle de fiche « Demi-garde WE de jour »,
+        // n'est pas un poste non autorisé (ex. BIÉMAR sur COORD-WE : seule la garde ENTIÈRE lui est fermée)
+        if(!(doc.allowedPosts||[]).includes(pid)&&!essai(function(){ return _demiGardeOuverte(doc,pid,dk); })) aj('nonAutorise',pid,'');
         if(essai(function(){ return hardIndispoBlocks(doc,pid,dk); })){
           const l=indispos.filter(function(i){ return i.docId===doc.id&&dk>=i.start&&dk<=(i.end||i.start)&&i.type!=='pref'&&i.type!=='unavail_post'; });
           if(l.length) aj('absence',pid,l.map(function(i){ return TYPE_LABEL[i.type]||i.type; }).filter(function(x,n,a){ return a.indexOf(x)===n; }).join(', '));
@@ -13508,7 +13516,11 @@ function solveurExtraire(months){
     const actifs=docs.filter(d=>d.active!==false);
     const CH=[['coord','coord-n'],['b','smur-n'],['a','satmu-n'],['admin','coord-n'],['admin','smur-n'],['admin','satmu-n']];
     const estSouhait=(id,dk,pid)=>indispos.some(i=>i.type==='pref'&&i.docId==id&&dk>=i.start&&dk<=i.end&&(!i.posteId||prefMatchesPost(i.posteId,pid)));
-    const eligible=(doc,dk,pid)=>{ const e=pickEligibility(doc,dk,pid,computeRepos(dk)); if(e.clickable) return {ok:true};
+    const eligible=(doc,dk,pid)=>{
+      // [17/11] pickEligibility ignore les INDISPONIBILITÉS DE POSTE (unavail_post, ex. « Section Nuit ») que isAvail et l'onglet Alertes
+      // respectent : trouvé sur le T1 réel (Barbato, 16-07 du 5 mars). Refus ferme, même pour un souhait ou un quota.
+      if(indispos.some(i=>i.docId===doc.id&&i.type==='unavail_post'&&dk>=i.start&&dk<=i.end&&prefMatchesPost(i.posteId,pid))) return {ok:false,code:'unavail_post'};
+      const e=pickEligibility(doc,dk,pid,computeRepos(dk)); if(e.clickable) return {ok:true};
       if(e.reasonCode==='already'){ const jour=Object.entries(shifts[dk]||{}).filter(([p,v])=>v===doc.id&&p!==pid).map(([p])=>p);
         if(jour.length===1&&CH.some(([a,b])=>a===jour[0]&&b===pid)){ const p0=jour[0]; delete shifts[dk][p0]; const e2=pickEligibility(doc,dk,pid,computeRepos(dk)); shifts[dk][p0]=doc.id;
           if(e2.clickable) return {ok:true}; if(e2.reasonCode==='quota'&&estSouhait(doc.id,dk,pid)) return {ok:true}; } }

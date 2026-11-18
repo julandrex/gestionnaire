@@ -252,6 +252,28 @@
         const br = aux(W.chaineCasse, false);
         J.forEach(vj => { const vn = N.find(w => w.d === vj.d); C(vj.n + (vn ? ' - ' + vn.n : '') + (exc.length ? ' - ' + exc.join(' - ') : '') + ' - ' + br, '<= 0'); });
         if (exc.length > 1) C(exc.join(' + '), '<= 1'); }); });
+    // 1b. [banc T1 v2 du 13/11, porté le 17/11] NUIT FIGÉE (verrouillée, ex. gardes du « Rôle de gardes »), JOUR À POURVOIR : le poste
+    //     de jour lié va au médecin qui tient la nuit, sauf exceptions admises (chef avec admin ce jour-là, assistant sur SMUR-N,
+    //     souhait sur la nuit). Cassure payée comme en règle 1. Essai T1 réel du 17/11 sans cette règle : 35 chaînages sur 186.
+    [...new Set(E.demande.map(c => c.dk))].forEach(dk => { if (E.dow[dk] === 0 || E.dow[dk] === 6 || E.ferie.includes(dk)) return;
+      PAIRES.forEach(([pj, pn]) => { const J = parCaseJour[dk + '|' + pj] || [], N = parCaseJour[dk + '|' + pn] || [];
+        if (!J.length || N.length) return;
+        const fn = E.fixes.find(f => f.dk === dk && f.pid === pn); if (!fn) return; const d = fn.doc;
+        if (pn === 'smur-n' && estAsst(d)) return;
+        if (E.souhaits.some(([ci, x]) => x === d && E.demande[ci] && E.demande[ci].dk === dk && E.demande[ci].pid === pn)) return;
+        const vj = J.find(w => w.d === d); if (!vj) return;
+        if (CHEFS.includes(nomDe(d)) && fixeDe(d, dk).includes('admin')) return;
+        const adm = CHEFS.includes(nomDe(d)) ? (parCaseJour[dk + '|admin'] || []).find(w => w.d === d) : null;
+        const br = aux(W.chaineCasse, false);
+        if (adm) { const ex = aux(W.exception, false); C(ex + ' - ' + adm.n, '<= 0'); C(vj.n + ' + ' + ex + ' + ' + br, '>= 1'); }
+        else C(vj.n + ' + ' + br, '>= 1'); }); });
+    // 2b. [banc T1 v2, porté le 17/11] Chef avec une nuit FIGÉE un jour de semaine : admin ce jour-là ou le poste chaîné (sauf mercredi pour DEGESVES).
+    E.fixes.filter(f => VN.includes(f.pid) && CHEFS.includes(nomDe(f.doc)) && E.dow[f.dk] >= 1 && E.dow[f.dk] <= 5 && !E.ferie.includes(f.dk)).forEach(f => {
+      if (nomDe(f.doc) === 'DEGESVES' && E.dow[f.dk] === 3) return;
+      const jour = PAIRES.find(([, n]) => n === f.pid)[0];
+      if (fixeDe(f.doc, f.dk).some(p => p === 'admin' || p === jour)) return;
+      const cands = ['admin', jour].map(p => (parCaseJour[f.dk + '|' + p] || []).find(w => w.d === f.doc)).filter(Boolean); if (!cands.length) return;
+      const z = aux(W.chefAdmin, false); C(somme(cands) + ' + ' + z, '>= 1'); });
     // 2. chefs « spécialistes admin »
     xv.filter(v => VN.includes(v.c.pid) && CHEFS.includes(nomDe(v.d)) && E.dow[v.c.dk] >= 1 && E.dow[v.c.dk] <= 5).forEach(v => {
       if (nomDe(v.d) === 'DEGESVES' && E.dow[v.c.dk] === 3) return;
