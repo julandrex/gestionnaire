@@ -1303,6 +1303,7 @@ document.addEventListener('DOMContentLoaded',function(){
         <button onclick="openReplaceAbsent();toggleMainMenu()" class="mm-item">🔄 Remplacer un médecin absent</button>
         <button onclick="openIndivModal();toggleMainMenu()" class="mm-item">📁 Plannings individuels</button>
         <button onclick="openExportModal();toggleMainMenu()" class="mm-item">⬇ Export PDF mensuel</button>
+        <button onclick="openVersionsMois();toggleMainMenu()" class="mm-item">🕓 Versions publiées du mois</button><!-- [2026-11-17 LOT4-VERSIONS] -->
         <div style="height:1px;background:var(--line2);margin:3px 0;"></div>
         <button onclick="resetPlanning();toggleMainMenu()" class="mm-item" style="color:var(--warn);">↺ Réinit. planning</button>
       </div>
@@ -3917,6 +3918,149 @@ async function checkMonthConflictBeforeOverwrite(sbClient, hospital, year, month
     window._jlxConflitErr=(e&&e.message)||String(e);
     return false;
   }
+}
+
+// ── [2026-11-17 LOT4-FERMETURE] Avertir avant de fermer la page pendant un travail en cours ───────────────────────────────────────
+// Audit du 11/11/2026, point M-6 (lot 4). Fermer ou recharger la page pendant une publication (y compris l'envoi des e-mails qui
+// la suit), une génération ou l'application d'un échange coupe l'opération au milieu : publication partielle, génération perdue.
+// Le navigateur demande maintenant confirmation dans ces trois cas, et seulement dans ceux-là : les modifications non publiées,
+// elles, sont déjà gardées sur cet ordinateur et ne se perdent pas à la fermeture. Retour arrière : AVERT_FERMETURE_ON=false.
+const AVERT_FERMETURE_ON=true;
+window._jlxPubEnCours=0;
+function _jlxTravailEnCours(){
+  if(window._jlxPubEnCours>0) return 'publication';
+  if(window._genRunning) return 'generation';
+  if(window._applyExchInFlight) return 'echange';
+  return '';
+}
+window.addEventListener('beforeunload',function(e){
+  if(!AVERT_FERMETURE_ON||!_jlxTravailEnCours()) return;
+  e.preventDefault(); e.returnValue=''; return '';
+});
+// Compteur de publications en cours, autour de la vraie fonction (toutes ses sorties, y compris les erreurs)
+publishToSupabase=(function(orig){ return async function(){
+  window._jlxPubEnCours++;
+  try{ return await orig.apply(this,arguments); }
+  finally{ window._jlxPubEnCours=Math.max(0,window._jlxPubEnCours-1); }
+}; })(publishToSupabase);
+
+// ── [2026-11-17 LOT4-VERSIONS] Versions publiées d'un mois : consulter et reprendre ──────────────────────────────────────────────
+// Audit du 11/11/2026, lot 4. Depuis le 12/11 (lot 0), la base garde 90 jours d'anciennes versions publiées de chaque mois
+// (planning_months_historique, lisible par les gestionnaires seulement). Revenir à l'une d'elles demandait un script.
+// Maintenant : Actions → « Versions publiées du mois » liste les versions du mois affiché. « Reprendre sur cet ordinateur » copie
+// une version (planning et verrous du mois) SUR CET ORDINATEUR SEULEMENT, comme une modification non publiée : rien n'est envoyé,
+// et la publication suivante passe par les contrôles habituels (règles, conflit). L'état d'avant la reprise est gardé et peut être
+// rétabli (« Annuler la reprise »). Ne reprend pas les absences (communes à tous les mois) ni les horaires du jour.
+// Retour arrière : VERSIONS_MOIS_ON=false.
+const VERSIONS_MOIS_ON=true;
+function _jlxMoisCle(y,m){ return y+'-'+('0'+(m+1)).slice(-2); }
+function _jlxCasesMois(sh,mp){
+  const o={};
+  Object.keys(sh||{}).forEach(function(dk){ if(dk.indexOf(mp)!==0) return; const d=sh[dk]||{};
+    Object.keys(d).forEach(function(p){ if(d[p]!=null&&d[p]!=='') o[dk+'|'+p]=String(d[p]); }); });
+  return o;
+}
+function _jlxEcartCases(a,b){ let n=0; new Set(Object.keys(a).concat(Object.keys(b))).forEach(function(k){ if(a[k]!==b[k]) n++; }); return n; }
+// Lecture seule. Renvoie {ok:false,msg} ou {ok:true, mp, actuelle, versions}.
+async function _jlxVersionsLire(y,m){
+  const sb=await getSbClient(); if(!sb) return {ok:false,msg:'Supabase non configuré.'};
+  const mp=_jlxMoisCle(y,m), H=currentHospitalId;
+  let uid=null; try{ const r=await sb.auth.getSession(); uid=(r&&r.data&&r.data.session&&r.data.session.user&&r.data.session.user.id)||null; }catch(e){}
+  const r1=await sb.from('planning_months').select('shifts,locked,published_at').eq('hospital_id',H).eq('year',y).eq('month',m).maybeSingle();
+  if(r1.error) return {ok:false,msg:'Lecture du planning publié impossible : '+(r1.error.message||r1.error)};
+  const r2=await sb.from('planning_months_historique').select('id,operation,remplace_le,remplace_par,published_at,shifts,locked')
+    .eq('hospital_id',H).eq('year',y).eq('month',m).order('remplace_le',{ascending:false}).limit(40);
+  if(r2.error) return {ok:false,msg:'Lecture des versions impossible : '+(r2.error.message||r2.error)};
+  const local=_jlxCasesMois(shifts,mp), pub=r1.data?_jlxCasesMois(r1.data.shifts,mp):null;
+  const versions=(r2.data||[]).map(function(v){ const c=_jlxCasesMois(v.shifts,mp);
+    return {id:v.id,operation:v.operation||'UPDATE',remplace_le:v.remplace_le||null,published_at:v.published_at||null,
+      par:(v.remplace_par==null?'systeme':(uid&&v.remplace_par===uid?'vous':'autre')),n:Object.keys(c).length,
+      ecartPublie:pub?_jlxEcartCases(c,pub):null,ecartLocal:_jlxEcartCases(c,local),shifts:v.shifts||{},locked:Array.isArray(v.locked)?v.locked:[]}; })
+    .sort(function(a,b){ return String(b.remplace_le||'').localeCompare(String(a.remplace_le||'')); });
+  return {ok:true,mp:mp,versions:versions,
+    actuelle:r1.data?{published_at:r1.data.published_at||null,n:Object.keys(pub).length,ecartLocal:_jlxEcartCases(pub,local)}:null};
+}
+function _jlxMoisDe(liste,mp){ return (Array.isArray(liste)?liste:[]).filter(function(l){ return l&&typeof l.dk==='string'&&l.dk.indexOf(mp)===0; }); }
+// Remplace le planning et les verrous du mois SUR CET ORDINATEUR par ceux de la version. N'écrit rien dans la base.
+function _jlxVersionReprendre(y,m,v){
+  const mp=_jlxMoisCle(y,m);
+  const avant={mois:mp,at:new Date().toISOString(),shifts:{},locked:_jlxMoisDe(lockedShifts,mp).map(function(l){ return Object.assign({},l); })};
+  Object.keys(shifts).forEach(function(dk){ if(dk.indexOf(mp)===0) avant.shifts[dk]=Object.assign({},shifts[dk]); });
+  try{ lsSet('planningURG_avantReprise',JSON.stringify(avant)); }
+  catch(e){ return {ok:false,msg:'L\'état actuel n\'a pas pu être gardé sur cet ordinateur : reprise annulée, rien n\'a changé.'}; }
+  Object.keys(shifts).forEach(function(dk){ if(dk.indexOf(mp)===0) delete shifts[dk]; });
+  Object.keys(v.shifts||{}).forEach(function(dk){ if(dk.indexOf(mp)===0) shifts[dk]=Object.assign({},v.shifts[dk]); });
+  if(Array.isArray(lockedShifts)) lockedShifts=lockedShifts.filter(function(l){ return !(l&&typeof l.dk==='string'&&l.dk.indexOf(mp)===0); })
+    .concat(_jlxMoisDe(v.locked,mp).map(function(l){ return Object.assign({},l); }));
+  saveShifts(); saveLockedShifts();
+  try{ render(); }catch(e){}
+  return {ok:true};
+}
+function _jlxRepriseLue(){ try{ const a=JSON.parse(lsGet('planningURG_avantReprise')||'null'); return (a&&a.mois)?a:null; }catch(e){ return null; } }
+// Rétablit le mois tel qu'il était sur cet ordinateur juste avant la dernière reprise.
+function _jlxRepriseAnnuler(){
+  const a=_jlxRepriseLue(); if(!a) return {ok:false,msg:'Aucune reprise à annuler sur cet ordinateur.'};
+  const mp=a.mois;
+  Object.keys(shifts).forEach(function(dk){ if(dk.indexOf(mp)===0) delete shifts[dk]; });
+  Object.keys(a.shifts||{}).forEach(function(dk){ if(dk.indexOf(mp)===0) shifts[dk]=Object.assign({},a.shifts[dk]); });
+  if(Array.isArray(lockedShifts)) lockedShifts=lockedShifts.filter(function(l){ return !(l&&typeof l.dk==='string'&&l.dk.indexOf(mp)===0); })
+    .concat(_jlxMoisDe(a.locked,mp));
+  saveShifts(); saveLockedShifts();   // le témoin « non publié » reste allumé : prudence (d'autres mois ont pu changer entre-temps)
+  try{ lsSet('planningURG_avantReprise','null'); }catch(e){}
+  try{ render(); }catch(e){}
+  return {ok:true,mois:mp};
+}
+function _jlxDateCourte(x){ if(!x) return '?'; try{ return new Date(x).toLocaleString('fr-BE',{dateStyle:'short',timeStyle:'short'}); }catch(e){ return String(x); } }
+function _jlxNomMois(mp){ return MONTHS[+mp.slice(5,7)-1]+' '+mp.slice(0,4); }
+async function openVersionsMois(){
+  if(!VERSIONS_MOIS_ON){ alert('Fonction désactivée.'); return; }
+  const y=cy, m=cm, old=document.getElementById('versions-mois-overlay'); if(old) old.remove();
+  const ov=document.createElement('div'); ov.id='versions-mois-overlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:10000;display:flex;align-items:center;justify-content:center;padding:16px;';
+  ov.innerHTML='<div style="background:var(--bg1);border:1px solid var(--line2);border-radius:14px;padding:22px 26px;max-width:680px;width:100%;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 20px 60px rgba(0,0,0,.5);">'
+    +'<div style="font-size:17px;font-weight:800;">🕓 Versions publiées — '+escHtml(MONTHS[m]+' '+y)+'</div>'
+    +'<div style="font-size:12px;color:var(--t3);margin:4px 0 10px;">La base garde 90 jours d\'anciennes versions. Reprendre une version la copie sur cet ordinateur seulement : rien n\'est publié tant que vous ne cliquez pas sur « Publier ».</div>'
+    +'<div id="vm-corps" style="overflow:auto;flex:1;min-height:60px;font-size:13px;">Lecture…</div>'
+    +'<div style="display:flex;justify-content:flex-end;margin-top:14px;"><button id="vm-fermer" style="background:var(--bg2);color:var(--t1);border:1px solid var(--line2);border-radius:9px;padding:10px 16px;cursor:pointer;">Fermer</button></div></div>';
+  document.body.appendChild(ov);
+  const fermer=function(){ try{ ov.remove(); }catch(e){} };
+  document.getElementById('vm-fermer').onclick=fermer;
+  const corps=document.getElementById('vm-corps');
+  let r; try{ r=await _jlxVersionsLire(y,m); }catch(e){ r={ok:false,msg:(e&&e.message)||String(e)}; }
+  if(!r.ok){ corps.innerHTML='<div style="color:var(--err);">'+escHtml(r.msg)+'</div>'; return; }
+  const ligne='padding:10px 12px;border:1px solid var(--line2);border-radius:9px;margin-bottom:8px;';
+  const bouton='background:var(--accent);color:#fff;border:none;border-radius:8px;padding:7px 12px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;';
+  let h='';
+  const a=_jlxRepriseLue();
+  if(a) h+='<div style="'+ligne+'background:rgba(245,158,11,.10);display:flex;gap:10px;align-items:center;"><div style="flex:1;">Dernière reprise sur cet ordinateur : <b>'+escHtml(_jlxNomMois(a.mois))+'</b>, le '+escHtml(_jlxDateCourte(a.at))+'.</div>'
+    +'<button id="vm-annuler" style="'+bouton+'background:var(--warn);">Annuler la reprise</button></div>';
+  if(r.actuelle) h+='<div style="'+ligne+'"><b>Version publiée actuelle</b> — publiée le '+escHtml(_jlxDateCourte(r.actuelle.published_at))+' · '+r.actuelle.n+' cases'
+    +' · <span style="color:var(--t3);">'+(r.actuelle.ecartLocal?r.actuelle.ecartLocal+' case(s) différente(s) sur cet ordinateur (modifications non publiées)':'identique à cet ordinateur')+'</span></div>';
+  else h+='<div style="'+ligne+'">Ce mois n\'est pas publié actuellement.</div>';
+  if(!r.versions.length) h+='<div style="color:var(--t3);padding:6px 2px;">Aucune ancienne version de ce mois dans les 90 derniers jours.</div>';
+  const qui={vous:'par vous',autre:'par un autre gestionnaire',systeme:'par un script ou une opération sans connexion'};
+  r.versions.forEach(function(v,i){
+    const quoi=v.operation==='DELETE'?'Mois supprimé le '+_jlxDateCourte(v.remplace_le):'Remplacée le '+_jlxDateCourte(v.remplace_le);
+    h+='<div style="'+ligne+'display:flex;gap:10px;align-items:center;"><div style="flex:1;"><b>Version publiée le '+escHtml(_jlxDateCourte(v.published_at))+'</b> · '+v.n+' cases<br>'
+      +'<span style="color:var(--t3);font-size:12px;">'+escHtml(quoi+' '+(qui[v.par]||''))+' · '+(v.ecartPublie==null?'':v.ecartPublie+' différence(s) avec la version publiée actuelle · ')+v.ecartLocal+' avec cet ordinateur</span></div>'
+      +(!v.n?'<span style="font-size:12px;color:var(--t3);">version vide</span>':v.ecartLocal?'<button data-vm="'+i+'" style="'+bouton+'">Reprendre sur cet ordinateur</button>':'<span style="font-size:12px;color:var(--t3);">déjà sur cet ordinateur</span>')+'</div>'; // une version vide n'est pas proposée
+  });
+  corps.innerHTML=h;
+  const ba=document.getElementById('vm-annuler');
+  if(ba) ba.onclick=function(){
+    if(!confirm('Rétablir '+_jlxNomMois(a.mois)+' tel qu\'il était sur cet ordinateur juste avant la reprise du '+_jlxDateCourte(a.at)+' ?\n\nRien n\'est publié.')) return;
+    const x=_jlxRepriseAnnuler(); if(!x.ok){ alert(x.msg); return; }
+    fermer(); showToast('Reprise annulée : '+_jlxNomMois(x.mois)+' est revenu à son état d\'avant, sur cet ordinateur. Rien n\'a été publié.',5000);
+  };
+  corps.querySelectorAll('button[data-vm]').forEach(function(b){ b.onclick=function(){
+    const v=r.versions[+b.getAttribute('data-vm')]; if(!v) return;
+    if(!confirm('Reprendre la version de '+MONTHS[m]+' '+y+' publiée le '+_jlxDateCourte(v.published_at)+' ?\n\n'
+      +'Sur cet ordinateur, le planning et les verrous de ce mois seront remplacés ('+v.ecartLocal+' case(s) changent).'
+      +(_localEditsAfterLastPublish?'\nVos modifications non publiées de ce mois seront remplacées aussi (récupérables avec « Annuler la reprise »).':'')
+      +'\n\nRien n\'est publié : vérifiez le planning, puis cliquez sur « Publier ». Les absences ne sont pas reprises.')) return;
+    const x=_jlxVersionReprendre(y,m,v); if(!x.ok){ alert(x.msg); return; }
+    fermer(); showToast('Version reprise sur cet ordinateur. Rien n\'est publié : vérifiez, puis cliquez sur « Publier ».',6000);
+  }; });
 }
 
 async function resetPlanning(){
