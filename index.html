@@ -8320,7 +8320,132 @@ function renderSlotDiagnosis(D){
           ?' : '+L.slice(0,10).map(x=>nm(x.doc)+' <span style="color:var(--t3);">('+repEsc(shortR(x.reason))+')</span>').join(', ')+(L.length>10?' +'+(L.length-10):'')
           :' : '+keys.map(r=>(keys.length>1||(r&&r!==C.lbl)?'<i>'+repEsc(r)+'</i> — ':'')+sub[r].slice(0,8).map(nm).join(', ')+(sub[r].length>8?' +'+(sub[r].length-8):'')).join(' ; '))
       +'</li>'; });
-  h+='</ul></div>';
+  h+='</ul>';
+  try{ const _pi=pourquoiPistes(D); if(_pi.length) h+='<div style="margin-top:6px;"><b>Comment débloquer ?</b><ul style="margin:2px 0 0 18px;padding:0;">'+_pi.map(p=>'<li>'+repEsc(p)+'</li>').join('')+'</ul></div>'; }catch(e){} // [2026-11-21 LOT5-POURQUOI]
+  h+='</div>';
+  return h;
+}
+// ── [2026-11-21 LOT5-POURQUOI] Mode « Pourquoi ? » (audit du 11/11/2026, lot 5 ; demande du Dr Sorce) ───────────────────────────
+// Répond, pour une case du planning : pourquoi ce médecin est à ce poste ; quelle contrainte écarte chacun des autres médecins
+// autorisés ; quel compromis le moteur a fait sur cette case (journal de génération) ; et, pour une case vide, comment la débloquer.
+// LECTURE SEULE : la case est vidée le temps du calcul puis remise exactement en place (bloc finally) ; rien n'est enregistré.
+// Les règles utilisées sont celles du moteur lui-même : _adelineReason à la Citadelle (contrôle complet des passes du moteur),
+// pickEligibility pour les hôpitaux en mode générique (fenêtre d'affectation). Limite assumée : le classement des candidats est
+// recalculé sur le planning ACTUEL, pas sur l'état du planning au moment de la génération.
+// Retour arrière : POURQUOI_ON=false (la fenêtre d'affectation redevient comme avant).
+const POURQUOI_ON=true;
+function _pqNom(d){ return d?((d.firstname||'')+' '+(d.lastname||'')).trim():'?'; }
+// Motif de refus d'un médecin pour (dk,pid) sur le planning tel qu'il est (null = aucune règle ne l'empêche)
+function _pqMotif(doc,pid,dk){
+  if(_jlxModeFiches()){ const e=pickEligibility(doc,dk,pid,computeRepos(dk)); return e.clickable?null:(e.reason||'indisponible'); }
+  return _adelineReason(doc,pid,dk,true,false);
+}
+function _pqJournal(dk,pid){
+  const out=[], vus=new Set();
+  const ajoute=function(type,txt){ txt=String(txt||'').trim(); if(!txt||vus.has(txt)) return; vus.add(txt); out.push({type:type||'',texte:txt}); };
+  (window._btViolations||[]).forEach(function(v){ if(v&&v.dk===dk&&v.postId===pid) ajoute(v.type,v.detail||v.type); });
+  try{ const arr=JSON.parse(localStorage.getItem('planningURG_journaux')||'[]')||[]; const mp=dk.slice(0,7);
+    const g=arr.filter(function(x){ return x&&String(x.mois||'').indexOf(mp)>=0; }).pop();
+    if(g) (g.ecarts||[]).forEach(function(e){ const i=String(e).indexOf(' | '); const ty=i>=0?String(e).slice(0,i):'', tx=i>=0?String(e).slice(i+3):String(e);
+      if(tx.indexOf(dk)>=0&&(tx.indexOf(pid+' ')===0||tx.indexOf(pid+'+')>=0||tx.indexOf('+'+pid)>=0||tx.indexOf(' '+pid+' ')>=0)) ajoute(ty,tx); }); }catch(e){}
+  return out;
+}
+function _pqOrigine(dk,pid,id){
+  const o=[];
+  try{ if(isShiftLocked(dk,pid)) o.push('case verrouillée par le gestionnaire'); }catch(e){}
+  try{ if(hasPrefForPost(id,pid,dk)) o.push('souhait du médecin pour ce poste ce jour-là (desiderata)'); else if(isPrefAssignment(dk,pid)) o.push('case liée à un souhait (desiderata)'); }catch(e){}
+  try{ if(typeof _isPriorityCell==='function'&&_isPriorityCell(dk,pid,id)) o.push('règle de priorité de sa fiche'); }catch(e){}
+  try{ const sh=sharedOn(dk,pid); if(sh) o.push('poste partagé (second titulaire : '+_pqNom(docs.find(function(d){ return d.id===sh.docId2; }))+')'); }catch(e){}
+  try{ const dp=_NIGHT_DAY_PARTNER[pid], nuit=Object.keys(_NIGHT_DAY_PARTNER).find(function(n){ return _NIGHT_DAY_PARTNER[n]===pid; });
+    if(dp&&(shifts[dk]||{})[dp]===id) o.push('nuit enchaînée à son poste de jour ('+((getPost(dp)||{}).name||dp)+')');
+    else if(nuit&&(shifts[dk]||{})[nuit]===id) o.push('poste de jour enchaîné à sa garde de nuit ('+((getPost(nuit)||{}).name||nuit)+')'); }catch(e){}
+  let gen=null;
+  try{ const s=JSON.parse(lsGet('planningURG_lastAutoGen')||'null');
+    if(s&&Array.isArray(s.scope)&&s.scope.indexOf(dk.slice(0,7))>=0){ const v=((s.shifts||{})[dk]||{})[pid];
+      gen=(v===id)?{code:'generation',texte:'posé par la génération du '+_jlxDateCourte(s.ts)}
+        :(v==null?{code:'ajout',texte:'ajouté après la génération du '+_jlxDateCourte(s.ts)+' (à la main, par un échange ou par le solveur) : la génération avait laissé la case vide'}
+        :{code:'modif',texte:'modifié après la génération du '+_jlxDateCourte(s.ts)+' (à la main, par un échange ou par le solveur) : la génération avait mis '+_pqNom(docs.find(function(d){ return d.id===v; }))}); }
+  }catch(e){}
+  if(!gen) gen={code:'inconnu',texte:'aucune génération de ce mois enregistrée sur cet ordinateur : origine inconnue (génération sur un autre poste, saisie à la main ou import)'};
+  return {raisons:o,gen:gen};
+}
+// Explication d'une case occupée. Renvoie {ok:false,msg} ou {ok:true, ...}. Ne modifie rien (état rétabli dans finally).
+function pourquoiCase(dk,pid){
+  const day=shifts[dk]||{}, id=day[pid];
+  if(id==null||id==='') return {ok:false,msg:'Case vide : voir « Pourquoi ce poste est vide ? ».'};
+  const X=docs.find(function(d){ return d.id===id; }), post=getPost(pid);
+  if(!X) return {ok:false,msg:'Le médecin de cette case n\'a pas de fiche.'};
+  const origine=_pqOrigine(dk,pid,id), journal=_pqJournal(dk,pid);
+  const sauve=Object.assign({},day);
+  let lui=null, luiRepli=null; const autres=[];
+  try{
+    // 1) le titulaire : retiré de toute la journée, puis contrôlé sur cette case
+    Object.keys(day).forEach(function(p){ if(day[p]===id) delete day[p]; });
+    lui=_pqMotif(X,pid,dk);
+    if(lui&&!_jlxModeFiches()) luiRepli=_adelineReason(X,pid,dk,true,true);
+    Object.keys(sauve).forEach(function(p){ day[p]=sauve[p]; });
+    // 2) les autres médecins autorisés : la case seule est vidée
+    delete day[pid];
+    docs.forEach(function(D){ if(D.id===id||D.active===false||!(D.allowedPosts||[]).includes(pid)) return;
+      let m; try{ m=_pqMotif(D,pid,dk); }catch(e){ m='contrôle impossible'; }
+      autres.push({doc:D,motif:m}); });
+  } finally {
+    Object.keys(day).forEach(function(p){ delete day[p]; }); Object.assign(day,sauve);
+    if(!shifts[dk]) shifts[dk]=day;
+  }
+  const libres=autres.filter(function(a){ return !a.motif; }), refuses=autres.filter(function(a){ return a.motif; });
+  // repères chiffrés : heures du mois / cible, gardes du mois
+  const y=+dk.slice(0,4), m=+dk.slice(5,7)-1; let heures={}, ctxT=null;
+  try{ heures=computeHoursForMonthWorked(y,m)||{}; ctxT=hoursYearByMonth(y); }catch(e){}
+  const chiffres=function(D){ let c=null; try{ c=docMonthTarget(D,y,m,ctxT); }catch(e){}
+    let g=0; try{ g=Math.round(gardeMonthLoad(D,dk)*(Math.max(8,+D.targetHours||40)/40)); }catch(e){}
+    return {heures:Math.round(heures[D.id]||0),cible:(c!=null?Math.round(c):null),gardes:g}; };
+  let rang=null;
+  if(!_jlxModeFiches()&&post&&libres.length){ try{ const saveP=Object.assign({},day); delete day[pid];
+    try{ const ctx=buildRankingContext(dk,post); const cl=rankCandidatesForPost(libres.map(function(a){ return a.doc; }).concat([X]),post,dk,ctx); rang=cl.findIndex(function(d){ return d.id===id; })+1;
+      const ordre={}; cl.forEach(function(d,i){ ordre[d.id]=i; }); libres.sort(function(p,q){ return (ordre[p.doc.id]||0)-(ordre[q.doc.id]||0); }); } // ordre de préférence du moteur
+    finally{ Object.keys(day).forEach(function(p){ delete day[p]; }); Object.assign(day,saveP); } }catch(e){ rang=null; } }
+  const groupes={}; refuses.forEach(function(a){ (groupes[a.motif]=groupes[a.motif]||[]).push(a.doc); });
+  return {ok:true,dk:dk,pid:pid,post:post,titulaire:X,origine:origine,journal:journal,
+    conforme:!lui,motifTitulaire:lui,toleréEnRepli:!!(lui&&luiRepli===null),
+    libres:libres.map(function(a){ return Object.assign({doc:a.doc},chiffres(a.doc)); }),chiffresTitulaire:chiffres(X),rangTitulaire:rang,
+    refuses:Object.keys(groupes).map(function(k){ return {motif:k,docs:groupes[k]}; }).sort(function(a,b){ return b.docs.length-a.docs.length; })};
+}
+// Pistes pour débloquer une case vide, à partir du diagnostic existant (diagnoseSlot)
+function pourquoiPistes(D){
+  const G=D.groups||{}, p=[], n=function(k){ return (G[k]||[]).length; };
+  if(n('available')) return p;
+  if(n('quota')) p.push(n('quota')+' médecin(s) bloqué(s) seulement par une règle de charge (espacement entre gardes, plafond) : forcer l\'un d\'eux ou déplacer une de ses gardes proches.');
+  if(n('rule')||n('constraint')) p.push((n('rule')+n('constraint'))+' médecin(s) écarté(s) par une règle ou une contrainte de leur fiche : vérifier si cette règle doit s\'appliquer ce jour-là.');
+  if(n('already')) p.push(n('already')+' médecin(s) déjà posté(s) ce jour-là : en déplacer un depuis un poste moins indispensable.');
+  if(n('repos')) p.push(n('repos')+' médecin(s) en repos après une garde la veille : confier la garde de la veille à quelqu\'un d\'autre libérerait l\'un d\'eux.');
+  if(n('unavail_dow')) p.push(n('unavail_dow')+' médecin(s) indisponible(s) ce jour de la semaine (récurrent) : demander une exception.');
+  if(n('leave')) p.push(n('leave')+' médecin(s) absent(s) (congé, formation…) : vérifier si une absence peut être déplacée.');
+  if(D.realShortage) p.push('Vrai manque d\'effectif : un renfort extérieur, ou laisser le poste vide et le signaler.');
+  return p;
+}
+function renderPourquoiCase(E){
+  if(!E||!E.ok) return '';
+  const nm=function(d){ return repEsc(_pqNom(d)); }, X=E.titulaire;
+  let h='<details style="background:var(--bg3);border:1px solid var(--line2);border-left:3px solid '+(E.conforme?'var(--ok)':'var(--warn)')+';border-radius:8px;padding:8px 12px;margin-bottom:12px;font-size:12px;line-height:1.55;">'
+    +'<summary style="cursor:pointer;font-weight:700;">🔍 Pourquoi '+nm(X)+' ici ?</summary><div style="margin-top:6px;">';
+  // 1. ce médecin
+  h+='<div><b>'+(E.conforme?'✅ Respecte toutes les règles du moteur pour ce poste.':(E.toleréEnRepli?'⚠️ Toléré seulement en repli : ':'⚠️ Enfreint une règle : ')+(E.conforme?'':repEsc(E.motifTitulaire)))+'</b></div>';
+  h+='<div style="color:var(--t2);">Origine : '+repEsc(E.origine.gen.texte)+'.</div>';
+  if(E.origine.raisons.length) h+='<div style="color:var(--t2);">Particularités : '+E.origine.raisons.map(repEsc).join(' ; ')+'.</div>';
+  const c=E.chiffresTitulaire; h+='<div style="color:var(--t3);font-size:11px;">'+nm(X)+' : '+c.heures+' h ce mois'+(c.cible!=null?' sur une cible de '+c.cible+' h':'')+' · '+c.gardes+' garde(s) ce mois.</div>';
+  // 2. compromis
+  if(E.journal.length) h+='<div style="margin-top:6px;"><b>Compromis enregistrés par le moteur sur cette case :</b><ul style="margin:2px 0 0 18px;padding:0;">'+E.journal.slice(0,6).map(function(j){ return '<li>'+repEsc(j.texte)+'</li>'; }).join('')+'</ul></div>';
+  else h+='<div style="margin-top:6px;color:var(--t3);">Aucun compromis enregistré par le moteur sur cette case.</div>';
+  // 3. les autres
+  h+='<div style="margin-top:6px;"><b>Les autres médecins autorisés sur ce poste</b>';
+  if(E.libres.length){
+    h+='<div>✅ '+E.libres.length+' auraient aussi pu le prendre'+(E.rangTitulaire?' — sur le planning actuel, le classement du moteur met '+nm(X)+' en '+E.rangTitulaire+(E.rangTitulaire===1?'re':'e')+' position':'')+' :</div><ul style="margin:2px 0 0 18px;padding:0;">'
+      +E.libres.slice(0,8).map(function(a){ return '<li>'+nm(a.doc)+' <span style="color:var(--t3);">('+a.heures+' h'+(a.cible!=null?' / '+a.cible+' h':'')+', '+a.gardes+' garde(s) ce mois)</span></li>'; }).join('')+(E.libres.length>8?'<li>…</li>':'')+'</ul>'
+      +'<div style="color:var(--t3);font-size:11px;">Le choix entre médecins possibles dépend du classement du moteur (souhaits, équité des gardes et des heures, enchaînements) au moment de la génération ; il peut différer du classement recalculé aujourd\'hui.</div>';
+  } else h+='<div>Aucun autre médecin ne pouvait le prendre sans enfreindre une règle.</div>';
+  if(E.refuses.length) h+='<ul style="margin:4px 0 0 18px;padding:0;">'+E.refuses.map(function(g){ return '<li>⛔ <i>'+repEsc(g.motif)+'</i> : '+g.docs.slice(0,8).map(nm).join(', ')+(g.docs.length>8?' +'+(g.docs.length-8):'')+'</li>'; }).join('')+'</ul>';
+  h+='</div></div></details>';
   return h;
 }
 let pickState={dk:null,pid:null};
@@ -8332,7 +8457,8 @@ function openPickModal(dk,pid){
   // [2026-09-27] Case vide : diagnostic « Pourquoi ce poste est vide ? » en tête de la fenêtre
   try{ const _pd=document.getElementById('pick-diag');
     if(_pd){ const _empty=(shifts[dk]||{})[pid]==null;
-      _pd.innerHTML=_empty?renderSlotDiagnosis(diagnoseSlot(dk,pid)):''; _pd.style.display=_empty?'':'none'; } }catch(e){ console.warn('diagnoseSlot :',e); }
+      let _pq=''; if(!_empty&&POURQUOI_ON){ try{ _pq=renderPourquoiCase(pourquoiCase(dk,pid)); }catch(e){ console.warn('pourquoiCase :',e); } } // [2026-11-21 LOT5-POURQUOI]
+      _pd.innerHTML=_empty?renderSlotDiagnosis(diagnoseSlot(dk,pid)):_pq; _pd.style.display=(_empty||_pq)?'':'none'; } }catch(e){ console.warn('diagnoseSlot :',e); }
   const rs=computeRepos(dk);
   const hoursM=computeHoursForMonthWorked(cy,cm);
   window._tgtCtx=hoursYearByMonth(new Date(dk+'T12:00:00').getFullYear()); // cibles : un seul calcul pour toute la liste
