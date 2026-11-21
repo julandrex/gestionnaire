@@ -4864,6 +4864,43 @@ function postEndFor(p, dk){
   return p?p.end:'';
 }
 function _dkPlus1(dk){ const d=new Date(dk+'T12:00:00'); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
+// [2026-11-21 N16-VENDREDI] Nom affiché d'un poste dont l'HEURE DE DÉBUT change ce jour-là (startByDow) : le nom suit l'horaire.
+// Demande du Dr Sorce (21/11/2026) : « il n'y a pas de 16-07 le vendredi mais bien un 18h-09h ». Le n16 s'affiche donc
+// « 16-07 / Garde 16h–07h » du lundi au jeudi et « 18-09 / Garde 18h–09h » le vendredi. Le poste reste le même en interne
+// (id n16, mêmes médecins autorisés, mêmes règles de repos, de contrôle et de solveur) : rien n'est écrit en base, et les postes
+// venus de la base (qui portent déjà startByDow/endByDow) suivent sans migration. Un jour férié, l'horaire de base s'applique
+// (et le n16 n'existe pas : régime du week-end). Seuls les libellés au format de l'horaire de base sont réécrits
+// (« 16-07 », « …16h–07h… ») ; un autre libellé reste tel quel, suivi de l'horaire du jour pour le nom long.
+function _postHH(t){ return String(t||'').slice(0,2); }
+function _postStartChanges(p,dk){ return !!(p&&dk&&p.start&&p.startByDow&&postStartFor(p,dk)!==p.start); }
+function postNameFor(p,dk){
+  if(!p) return '';
+  const n=String(p.name||p.id||'');
+  if(!_postStartChanges(p,dk)) return n;
+  return n===_postHH(p.start)+'-'+_postHH(p.end) ? _postHH(postStartFor(p,dk))+'-'+_postHH(postEndFor(p,dk)) : n;
+}
+function postFullFor(p,dk){
+  if(!p) return '';
+  const f=String(p.full||p.name||p.id||'');
+  if(!_postStartChanges(p,dk)) return f;
+  const s=postStartFor(p,dk), e=postEndFor(p,dk);
+  const re=new RegExp(_postHH(p.start)+'h\\s*[–-]\\s*'+_postHH(p.end)+'h');
+  return re.test(f) ? f.replace(re,_postHH(s)+'h–'+_postHH(e)+'h') : f+' ('+s+'–'+e+')';
+}
+// Copie d'un poste écrite dans planning_months.posts à la publication (lue par le viewer). Depuis le 21/11/2026, elle garde les
+// horaires variables (startByDow, endByDow, endOnHoliday) : sans eux, le viewer affichait 16:00–07:00 le vendredi pour le n16.
+function _postPublie(p){
+  const o={id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end};
+  if(p.startByDow) o.startByDow=p.startByDow;
+  if(p.endByDow) o.endByDow=p.endByDow;
+  if(p.endOnHoliday) o.endOnHoliday=p.endOnHoliday;
+  return o;
+}
+// Horaires variables d'un poste pour l'en-tête de ligne de la vue postes (ex. n16 : « · ven. 18:00–09:00+1 »).
+function _postVarianteTxt(p){
+  if(!p||!p.startByDow) return '';
+  return Object.keys(p.startByDow).filter(w=>p.startByDow[w]).map(w=>' · '+DAYS[+w].toLowerCase()+'. '+p.startByDow[w]+'–'+((p.endByDow&&p.endByDow[w])||p.end)+(p.overnight?'+1':'')).join('');
+}
 function postHours(p, dk){
   if(!p) return 0;
   // Circuit sam/dim ne compte pas dans les heures
@@ -5980,7 +6017,8 @@ function buildStatPostGroups(){
     {label:'Circuit', pids:['circuit'],color:'#f97316'},
     {label:'14-22',   pids:['pm14'],color:'#e879f9'},
     {label:'16-00',   pids:['pm16'],color:'#f472b6'},
-    {label:'16-07',   pids:['n16'],color:'#fb7185'},
+    {label:'16-07',   pids:['n16'],color:'#fb7185',fri:false}, // [2026-11-21 N16-VENDREDI] du lundi au jeudi
+    {label:'18-09',   pids:['n16'],color:'#f43f5e',fri:true},  // le vendredi (même poste n16, horaire 18h–09h)
     {label:'COORD-N', pids:['coord-n'],color:'#93c5fd'},
     {label:'SMUR-N',  pids:['smur-n'],color:'#6ee7b7'},
     {label:'SATMU-N', pids:['satmu-n'],color:'#c4b5fd'},
@@ -6004,7 +6042,7 @@ function buildStatPostGroups(){
     const livePids=g.pids.filter(id=>existingIds.has(id));
     if(!livePids.length) return; // tous les postes de ce groupe ont été retirés
     livePids.forEach(id=>coveredIds.add(id));
-    groups.push({label:g.label,pids:livePids,color:g.color,sum:g.sum});
+    groups.push({label:g.label,pids:livePids,color:g.color,sum:g.sum,fri:g.fri});
   });
   // Postes créés via l'UI, absents du regroupement curaté ci-dessus
   posts.forEach(p=>{
@@ -6044,7 +6082,7 @@ function renderStatPost(){
         if(!docId) continue;
         groups.forEach(g=>{
           if(g.holiday){if(isJF&&workedThisDay.has(docId)&&counts[docId])counts[docId][g.label]=Math.max(counts[docId][g.label]||0,1);}
-          else if(g.pids&&g.pids.includes(pid)&&counts[docId]) counts[docId][g.label]++;
+          else if(g.pids&&g.pids.includes(pid)&&counts[docId]&&(g.fri==null||g.fri===(dowOf(dk)===5&&!isHoliday(dk)))) counts[docId][g.label]++;
         });
       }
     }
@@ -6190,7 +6228,7 @@ function exportStatPostPDF(){
       const dk=dkey(y,m,d);
       for(const [pid,docId] of dayEntries(dk)){
         if(!docId) continue;
-        groups.forEach(g=>{if(g.pids&&g.pids.includes(pid)&&counts[docId]) counts[docId][g.label]++;});
+        groups.forEach(g=>{if(g.pids&&g.pids.includes(pid)&&counts[docId]&&(g.fri==null||g.fri===(dowOf(dk)===5&&!isHoliday(dk)))) counts[docId][g.label]++;});
       }
     }
   });
@@ -6580,7 +6618,7 @@ const REP_COLS={
   2:[{h:'Plateau B',sub:'U3',pids:['u3-1','u3-2','u3-3','u3-4','u3-5'],keys:{'u3-1':'1','u3-2':'2','u3-3':'3','u3-4':'4','u3-5':'5'},w:27},
      {h:'TARD',sub:'14-22',pids:['pm14'],w:12},
      {h:'Extra-tard (E)',sub:'16-00 · WE',pids:['pm16','we-e'],w:12},
-     {h:'Garde U3 (B)',sub:'16-07 · WE',pids:['n16','we-u3-sat','we-u3-sun'],w:10},
+     {h:'Garde U3 (B)',sub:'16-07 · ven. 18-09 · WE',pids:['n16','we-u3-sat','we-u3-sun'],w:10},
      {h:'Doublure WE',pids:['we-doublure'],w:9},
      {h:'Chef et adjoints',exc:'chef',w:10},
      {h:'Francorchamps',exc:'franco',pids:['circuit'],w:12}]
@@ -6589,6 +6627,7 @@ function repSlot(dk,pid,key,ctx){
   const post=getPost(pid); if(!post) return '';
   const id=(shifts[dk]||{})[pid];
   if(id==null&&!postActiveOnDay(post,dk)) return '';
+  if(!key&&_postStartChanges(post,dk)) key=postNameFor(post,dk); // [2026-11-21 N16-VENDREDI] « 18-09 » devant le nom le vendredi
   const k=key?'<span class="rk">'+repEsc(key)+'</span>':'';
   if(id!=null){
     const doc=docs.find(x=>x.id===id);
@@ -6605,11 +6644,11 @@ function repSlot(dk,pid,key,ctx){
              +' · '+(_d2?_d2.lastname:'?')+' '+_sp.b[0]+'–'+_sp.b[1]+' ('+(+_sh.h2||0)+' h)';
     }
     const al=repAlert(dk,pid,id,ctx), lock=isShiftLocked(dk,pid);
-    const title=post.full+' — '+(doc?doc.firstname+' '+doc.lastname:'?')+_shTxt+(lock?' — verrouillé':'')+(al?' — ⚠ '+al:'');
+    const title=postFullFor(post,dk)+' — '+(doc?doc.firstname+' '+doc.lastname:'?')+_shTxt+(lock?' — verrouillé':'')+(al?' — ⚠ '+al:'');
     return '<span class="rslot full'+(al?' warn':'')+(lock?' lock':'')+'" title="'+repEsc(title)+'" onclick="repSlotMenu(event,\''+dk+'\',\''+pid+'\')">'+k+repEsc(who)+(al?' ⚠':'')+'</span>';
   }
   const soft=post.optional||REP_SOFT.includes(pid);
-  return '<span class="rslot '+(soft?'opt':'need')+'" title="'+repEsc(post.full)+(soft?' (facultatif)':' — à pourvoir')+'" onclick="openPickModal(\''+dk+'\',\''+pid+'\')">+ '+repEsc(key||(soft?post.name:'…'))+'</span>';
+  return '<span class="rslot '+(soft?'opt':'need')+'" title="'+repEsc(postFullFor(post,dk))+(soft?' (facultatif)':' — à pourvoir')+'" onclick="openPickModal(\''+dk+'\',\''+pid+'\')">+ '+repEsc(key||(soft?post.name:'…'))+'</span>';
 }
 function repAlert(dk,pid,id,ctx){
   const post=getPost(pid);
@@ -6707,7 +6746,7 @@ function openShareModal(dk,pid,mode){
   box.style.cssText='background:var(--bg1);border:1px solid var(--line2);border-radius:12px;padding:22px;width:460px;max-width:92vw;';
   box.innerHTML='<div style="font-size:15px;font-weight:700;color:var(--t1);margin-bottom:2px;">'
       +(mode==='double'?'👥 Doubler le poste':'✂️ Scinder le poste')+'</div>'
-    +'<div style="font-size:12px;color:var(--t2);margin-bottom:14px;">'+repEsc(post.full||pid)+' · '+formatDate(dk)
+    +'<div style="font-size:12px;color:var(--t2);margin-bottom:14px;">'+repEsc(postFullFor(post,dk)||pid)+' · '+formatDate(dk)
       +' · '+total+' h — titulaire : <b>'+repEsc(titulaire?titulaire.firstname+' '+titulaire.lastname:'?')+'</b></div>'
     +'<div style="font-size:12px;color:var(--t2);margin-bottom:4px;">Second médecin</div>'
     +'<select id="shm-doc" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid var(--line2);background:var(--bg2);color:var(--t1);font:inherit;font-size:13px;margin-bottom:14px;">'
@@ -6751,7 +6790,7 @@ function repShowMenu(ev,html){
 }
 function repSlotMenu(ev,dk,pid){
   const id=(shifts[dk]||{})[pid], post=getPost(pid)||{}, doc=docs.find(x=>x.id===id), lock=isShiftLocked(dk,pid);
-  repShowMenu(ev,'<div class="h">'+repEsc(post.full||pid)+' · '+formatDate(dk)+' — '+repEsc(doc?doc.firstname+' '+doc.lastname:'?')+'</div>'
+  repShowMenu(ev,'<div class="h">'+repEsc(postFullFor(post,dk)||pid)+' · '+formatDate(dk)+' — '+repEsc(doc?doc.firstname+' '+doc.lastname:'?')+'</div>'
     +'<div onclick="hideRepMenu();openPickModal(\''+dk+'\',\''+pid+'\')">🔁 Remplacer…</div>'
     +'<div onclick="hideRepMenu();toggleShiftLock(\''+dk+'\',\''+pid+'\',event)">'+(lock?'🔓 Déverrouiller':'🔒 Verrouiller')+'</div>'
     +(sharedOn(dk,pid)
@@ -6826,7 +6865,7 @@ function renderPlanning(){
           <div class="post-dot" style="background:${post.color}"></div>
           <div>
             <div class="post-name">${post.full}${weBadge}${optBadge}</div>
-            <div class="post-hrs">${post.start}–${post.end}${post.overnight?'+1':''} (${postHours(post).toFixed(1)}h)</div>
+            <div class="post-hrs">${post.start}–${post.end}${post.overnight?'+1':''} (${postHours(post).toFixed(1)}h)${_postVarianteTxt(post)}</div>
           </div>
         </div>
       </td>`;
@@ -6843,7 +6882,7 @@ function renderPlanning(){
         if(doc){
           const locked=isShiftLocked(dk,pid);
           h+=`<td class="shift-cell filled${isWE(dk)?' we-col':''}" style="background:${post.color}1a;${locked?'box-shadow:inset 0 0 0 2px '+post.color+';':''}">
-            <div class="chip" style="color:${post.color};" title="${doc.firstname} ${doc.lastname}${locked?' — 🔒 verrouillé (survit à la régénération)':''}">
+            <div class="chip" style="color:${post.color};" title="${doc.firstname} ${doc.lastname}${_postStartChanges(post,dk)?' — '+postFullFor(post,dk):''}${locked?' — 🔒 verrouillé (survit à la régénération)':''}">
               <button class="chip-lock${locked?' on':''}" onclick="toggleShiftLock('${dk}','${pid}',event)" title="${locked?'Déverrouiller ce poste':'Verrouiller : ce poste survivra à la régénération'}">${locked?'🔒':'🔓'}</button>
               <span class="chip-ini" style="font-size:${doc.lastname.length<=5?10:doc.lastname.length<=7?9:doc.lastname.length<=9?8:7}px;">${doc.lastname.toUpperCase()}</span>
               <button class="chip-del" onclick="removeShift('${dk}','${pid}',event)">✕</button>
@@ -6961,7 +7000,7 @@ function _demiGardeOuverte(doc,pid,dk){
 // [{code,titre,dk,pid,docId,texte}]. Ne modifie rien.
 function controlerPlanning(dkDebut,dkFin){
   const out=[];
-  const nomPoste=function(pid){ const p=getPost(pid); return p?(p.name||pid):pid; };
+  const nomPoste=function(pid,dk){ const p=getPost(pid); return p?(postNameFor(p,dk)||pid):pid; }; // [2026-11-21 N16-VENDREDI] « 18-09 » le vendredi
   const essai=function(f){ try{ return !!f(); }catch(e){ return false; } };
   Object.keys(shifts).sort().forEach(function(dk){
     if((dkDebut&&dk<dkDebut)||(dkFin&&dk>dkFin)) return;
@@ -6971,10 +7010,10 @@ function controlerPlanning(dkDebut,dkFin){
       const pids=parMed[k], id=day[pids[0]], doc=docs.find(function(x){ return x.id==id; });
       const qui=doc?((doc.firstname||'')+' '+(doc.lastname||'')).trim():('médecin n° '+id);
       const aj=function(code,pid,detail){ out.push({code:code,titre:CTRL_TITRES[code],dk:dk,pid:pid,docId:id,
-        texte:qui+' — '+formatDate(dk)+' ('+nomPoste(pid)+')'+(detail?' : '+detail:'')}); };
+        texte:qui+' — '+formatDate(dk)+' ('+nomPoste(pid,dk)+')'+(detail?' : '+detail:'')}); };
       if(!doc){ pids.forEach(function(pid){ aj('inconnu',pid,'fiche introuvable'); }); return; }
       for(let i=0;i<pids.length;i++) for(let j=i+1;j<pids.length;j++)
-        if(!_ctrlPaireLegitime(doc,pids[i],pids[j])) aj('double',pids[j],'en même temps que '+nomPoste(pids[i]));
+        if(!_ctrlPaireLegitime(doc,pids[i],pids[j])) aj('double',pids[j],'en même temps que '+nomPoste(pids[i],dk));
       pids.forEach(function(pid){
         const post=getPost(pid);
         if(!isInContract(doc,dk)) aj('contrat',pid,(doc.contractEnd&&dk>doc.contractEnd)?'contrat terminé le '+formatDate(doc.contractEnd):'contrat commençant le '+formatDate(doc.contractStart));
@@ -7099,7 +7138,7 @@ function getAllConflicts(){
       if(rs.has(docId)){
         const dc=docs.find(x=>x.id===docId);
         const po=getPost(pid);
-        result.push({type:'err',title:'Repos non respecté',desc:`${dc?.firstname||'?'} ${dc?.lastname||''} — ${formatDate(dk)} (${po?.name||pid})`});
+        result.push({type:'err',title:'Repos non respecté',desc:`${dc?.firstname||'?'} ${dc?.lastname||''} — ${formatDate(dk)} (${po?postNameFor(po,dk):pid})`});
       }
     }
     for(const [pid,docId] of Object.entries(day)){
@@ -7107,7 +7146,7 @@ function getAllConflicts(){
       const dc=docs.find(x=>x.id===docId);
       if(!dc||!unavailDowBlocks(dc,pid,dk)) continue;
       const po=getPost(pid);
-      result.push({type:'err',title:'Jour indisponible non respecté',desc:`${dc.firstname||'?'} ${dc.lastname||''} — ${formatDate(dk)} (${po?.name||pid})`});
+      result.push({type:'err',title:'Jour indisponible non respecté',desc:`${dc.firstname||'?'} ${dc.lastname||''} — ${formatDate(dk)} (${po?postNameFor(po,dk):pid})`});
     }
     for(const [pid,docId] of Object.entries(day)){
       if(!docId) continue;
@@ -7125,7 +7164,7 @@ function getAllConflicts(){
         const hit=Object.entries(shifts[dk2]||{}).find(([p2,did])=>did===docId&&isGardePost(getPost(p2)));
         if(hit){
           const prevPost=getPost(hit[0]);
-          result.push({type:'err',title:'Gardes trop rapprochées',desc:`${dc.firstname||'?'} ${dc.lastname||''} — ${formatDate(dk2)} (${prevPost?.name||hit[0]}) et ${formatDate(dk)} (${post.name||pid}) — moins de 72h d'écart`});
+          result.push({type:'err',title:'Gardes trop rapprochées',desc:`${dc.firstname||'?'} ${dc.lastname||''} — ${formatDate(dk2)} (${prevPost?postNameFor(prevPost,dk2):hit[0]}) et ${formatDate(dk)} (${postNameFor(post,dk)||pid}) — moins de 72h d'écart`});
           break;
         }
       }
@@ -7219,7 +7258,7 @@ function getAllConflicts(){
     if(label.indexOf('Non garde')>=0 && isGardePost(post.id)) respected=false;
     if(!respected)
       result.push({type:'warn',title:'Pr\u00e9f\u00e9rence non respect\u00e9e',
-        desc:doc2.firstname+' '+doc2.lastname+' \u2014 '+formatDate(dk)+' ('+post.name+')'+' | souhait: '+label.split(':').pop().trim()});
+        desc:doc2.firstname+' '+doc2.lastname+' \u2014 '+formatDate(dk)+' ('+postNameFor(post,dk)+')'+' | souhait: '+label.split(':').pop().trim()});
   });
 
   // WE-E non couvert un WE (Citadelle uniquement)
@@ -7233,7 +7272,7 @@ function getAllConflicts(){
     for(let d=1;d<=d2n;d++){
       const dk=dkey(cy,cm,d);
       if(!isWE(dk)&&!(shifts[dk]||{})['n16']){
-        result.push({type:'err',title:'Garde 16-07 non couverte',desc:`${formatDate(dk)} — assistant requis`});
+        result.push({type:'err',title:'Garde '+postNameFor(getPost('n16'),dk)+' non couverte',desc:`${formatDate(dk)} — assistant requis`}); // [2026-11-21 N16-VENDREDI] « 18-09 » le vendredi
       }
     }
   }
@@ -7258,7 +7297,7 @@ function getAllConflicts(){
         if(!post.imperatif||post.optional) continue;
         if(!postActiveOnDay(post,dk)) continue;
         if(!(shifts[dk]||{})[post.id]){
-          result.push({type:'err',title:'Poste impératif vide',desc:`${post.full} — ${formatDate(dk)}`});
+          result.push({type:'err',title:'Poste impératif vide',desc:`${postFullFor(post,dk)} — ${formatDate(dk)}`});
         }
       }
     }
@@ -12433,6 +12472,119 @@ function fridayBalanceSanitize(months){
   if(done.length) console.log('⚖️ fridayBalanceSanitize : '+done.length+' nuit(s) de vendredi rééquilibrée(s).',done);
   return done;
 }
+// ── [2026-11-21 N16-VENDREDI] Équilibre des 18-09 du vendredi entre les médecins autorisés au n16, par TRIMESTRE ──────────────────
+// Demande du Dr Sorce (21/11/2026) : le vendredi, le n16 est un 18 h – 9 h (voir postNameFor), réservé aux mêmes médecins que le
+// 16-07 (assistants, Foamkom, Guzman), et il faut un équilibre entre eux ; décision du même jour : « par trimestre ».
+// Charge d'un médecin = 18-09 tenus dans les vendredis du trimestre ÷ part attendue, avec part attendue = temps de travail
+// (targetHours ÷ 40, comme fridayBalanceSanitize) × part des vendredis du trimestre passés sous contrat (un assistant arrivé en
+// cours de trimestre en attend moins). Les vendredis fériés n'ont pas de n16 (régime du week-end) et ne comptent pas.
+// Tant qu'un médecin dépasse un autre de plus de N16_FRIDAY_GAP, un de ses 18-09 du périmètre généré passe à cet autre :
+//   1) de préférence par ÉCHANGE contre un 16-07 (lundi à jeudi) du receveur dans le périmètre : le nombre de n16 et les heures
+//      de chacun ne bougent pas, seul le vendredi change de main ;
+//   2) sinon par simple transfert, si le receveur a moins de gardes que le cédant dans le mois (rapportées au temps de travail),
+//      éventuellement en cédant au cédant son poste de jour (_dayPostSwap, comme les autres filets du vendredi).
+// Éligibilité complète des deux côtés (_adelineStrictOk : repos, 72 h, contrat, absences, plafonds…) et pas de deuxième nuit de
+// vendredi dans le mois pour le receveur (fridayMonthClash, le 16-07 compté). Jamais sur une case verrouillée, issue d'un
+// desiderata, prioritaire ou scindée. Sans possibilité : rien n'est changé (règle molle). Chaque déplacement est écrit dans le
+// journal des écarts (type « n16-vendredi-equilibre »). Lancée en fin de génération ET après l'amélioration progressive (qui peut
+// déplacer des n16 entre PH). Retour arrière : N16_FRIDAY_BALANCE_ON=false.
+const N16_FRIDAY_BALANCE_ON=true;
+const N16_FRIDAY_GAP=1;
+function n16FridaysOfQuarter(y,q0){
+  const p=getPost('n16'), out=[]; if(!p) return out;
+  for(let m=q0;m<q0+3;m++){ const d2=dim(y,m); for(let d=1;d<=d2;d++){ const k=dkey(y,m,d); if(dowOf(k)===5&&postActiveOnDay(p,k)) out.push(k); } }
+  return out;
+}
+function n16FridayWeight(doc,fris){
+  if(!doc||!fris||!fris.length) return 0;
+  const inC=fris.filter(k=>isInContract(doc,k)).length;
+  return (Math.max(8,+doc.targetHours||40)/40)*(inC/fris.length);
+}
+function n16FridayCount(docId,fris){ let n=0; fris.forEach(k=>{ if((shifts[k]||{})['n16']===docId) n++; }); return n; }
+function n16FridayPool(fris){
+  return docs.filter(d=>d.active!==false&&!d.specialCase&&(d.allowedPosts||[]).includes('n16')&&!/^TEST$/i.test(d.lastname||'')&&n16FridayWeight(d,fris)>0);
+}
+// Tente de faire passer le 18-09 du vendredi f de X à R. Renvoie {mode, autre} si fait, null sinon (shifts alors inchangé).
+// Le receveur R prend le 18-09 de X le vendredi f : directement s'il est libre, sinon en cédant à X son poste de jour de f
+// (_dayPostSwap). Renvoie le poste de jour cédé, '' si R était libre, null si impossible (shifts alors inchangé).
+function _n16FridayTake(f,X,R){
+  const dayF=shifts[f];
+  delete dayF['n16'];
+  let ok=false; try{ ok=_adelineStrictOk(R,'n16',f); }catch(e){ ok=false; }
+  dayF['n16']=X.id;
+  if(ok){ dayF['n16']=R.id; return ''; }
+  const sw=_dayPostSwap(f,['n16'],X,R);
+  if(sw){ dayF[sw]=X.id; dayF['n16']=R.id; return sw; }
+  return null;
+}
+function _n16FridayUntake(f,X,R,sw){ const dayF=shifts[f]; dayF['n16']=X.id; if(sw) dayF[sw]=R.id; }
+function _n16FridayMove(f,X,R,allowed){
+  const dayF=shifts[f]; if(!dayF||dayF['n16']!==X.id) return null;
+  // Règle « pas deux nuits de vendredi dans le mois ni deux vendredis d'affilée » (fridayMonthClash) : le receveur ne doit pas
+  // l'enfreindre, sauf si le cédant l'enfreint déjà sur ce vendredi (le déplacement ne crée alors aucun écart de plus).
+  if(fridayMonthClash(R,f,'night')&&!fridayMonthClash(X,f,'night')) return null;
+  const y=+f.slice(0,4), m=+f.slice(5,7)-1, q0=Math.floor(m/3)*3;
+  // 1) échange contre un 16-07 (lundi à jeudi) du receveur, dans le même trimestre et le périmètre
+  const wk=[]; for(let mm=q0;mm<q0+3;mm++){ const d2=dim(y,mm); for(let d=1;d<=d2;d++){ const k=dkey(y,mm,d);
+    if(!allowed.has(k)||dowOf(k)===5) continue; const sd=shifts[k]; if(sd&&sd['n16']===R.id&&!_adelineProtected(k,'n16',R.id)) wk.push(k); } }
+  for(const w of wk){
+    const dayW=shifts[w];
+    delete dayW['n16'];
+    const sw=_n16FridayTake(f,X,R);
+    if(sw!==null){
+      let ok=false; try{ ok=_adelineStrictOk(X,'n16',w); }catch(e){ ok=false; }
+      if(ok){ dayW['n16']=X.id; return {mode:'echange',autre:w,jour:sw||null}; }
+      _n16FridayUntake(f,X,R,sw);
+    }
+    dayW['n16']=R.id;
+  }
+  // 2) transfert simple, seulement vers un médecin moins chargé en gardes ce mois-ci
+  if(gardeMonthLoad(R,f)>=gardeMonthLoad(X,f)) return null;
+  const sw=_n16FridayTake(f,X,R);
+  return sw===null?null:{mode:'transfert',autre:null,jour:sw||null};
+}
+function n16FridayBalanceSanitize(months,allowedKeys){
+  const done=[]; if(!N16_FRIDAY_BALANCE_ON||!months||!months.length||!getPost('n16')) return done;
+  const nm=id=>{ const d=docs.find(x=>x.id===id); return d?d.lastname:('#'+id); };
+  const allowed=new Set(); months.forEach(([yy,mm])=>{ const d2=dim(yy,mm); for(let d=1;d<=d2;d++){ const k=dkey(yy,mm,d); if(!allowedKeys||allowedKeys.has(k)) allowed.add(k); } });
+  const quarters=new Map(); months.forEach(([yy,mm])=>{ const q0=Math.floor(mm/3)*3; quarters.set(yy+'|'+q0,[yy,q0]); });
+  const prevPhase=_FRIDAY_N16_PHASE; _FRIDAY_N16_PHASE=true; // le 16-07 du vendredi compte comme une nuit de vendredi (fridayMonthClash)
+  try{
+    quarters.forEach(([y,q0])=>{
+      const fris=n16FridaysOfQuarter(y,q0); if(!fris.length) return;
+      const pool=n16FridayPool(fris); if(pool.length<2) return;
+      const w=new Map(pool.map(d=>[d.id,n16FridayWeight(d,fris)]));
+      for(let it=0;it<80;it++){
+        const load=new Map(pool.map(d=>[d.id,n16FridayCount(d.id,fris)/w.get(d.id)]));
+        const order=[...pool].sort((a,b)=>load.get(b.id)-load.get(a.id));
+        let moved=false;
+        outer:
+        for(const X of order){
+          const lx=load.get(X.id); if(lx<=0) break;
+          const cells=fris.filter(k=>allowed.has(k)&&(shifts[k]||{})['n16']===X.id&&!_adelineProtected(k,'n16',X.id)).sort().reverse();
+          if(!cells.length) continue;
+          const recv=pool.filter(R=>R.id!==X.id&&lx-load.get(R.id)>N16_FRIDAY_GAP&&load.get(R.id)+1/w.get(R.id)<lx)
+            .sort((a,b)=>load.get(a.id)-load.get(b.id)||gardeMonthLoad(a,cells[0])-gardeMonthLoad(b,cells[0]));
+          for(const R of recv){
+            for(const f of cells){
+              const r=_n16FridayMove(f,X,R,allowed);
+              if(!r) continue;
+              done.push({dk:f,de:nm(X.id),a:R.lastname,mode:r.mode,autre:r.autre||undefined,jour:r.jour||undefined});
+              window._btViolations=window._btViolations||[];
+              window._btViolations.push({dk:f,postId:'n16',docId:R.id,docName:R.firstname+' '+R.lastname,type:'n16-vendredi-equilibre',
+                detail:'18-09 du '+f+' : '+nm(X.id)+' → '+R.lastname+(r.mode==='echange'?' (échangé contre son 16-07 du '+r.autre+')':'')+(r.jour?' (qui lui cède son '+r.jour+' du '+f+')':'')
+                  +' (équilibre des 18-09 du vendredi du trimestre)'});
+              moved=true; break outer;
+            }
+          }
+        }
+        if(!moved) break;
+      }
+    });
+  } finally{ _FRIDAY_N16_PHASE=prevPhase; }
+  if(done.length) console.log('⚖️ n16FridayBalanceSanitize : '+done.length+' 18-09 du vendredi rééquilibré(s).',done);
+  return done;
+}
 // [2026-10-19] Plafonds propres au 14-22 pour un médecin qui reprend un pm14 en fin de génération : plafond mensuel de
 // fiche (ex. Dabbour 4), 1 pm14 par semaine pour un généraliste (2 si pm14Priority), 1 par mois pour un assistant.
 function pm14CapsOk(doc,dk){
@@ -14558,6 +14710,8 @@ async function confirmGenerate(){
     // [2026-10-21] Jamais deux 16-00 dans le même mois pour un médecin (sauf plafond de fiche, Foamkom) : filet de fin de génération.
     // [2026-10-21] Équilibrage final des nuits du vendredi du trimestre (règle molle), avant le filet des 16-00.
     try{ R.fridayBalance=fridayBalanceSanitize(months); }catch(e){ console.warn('fridayBalanceSanitize error:',e); }
+    // [2026-11-21 N16-VENDREDI] Équilibre des 18-09 du vendredi (n16) entre les médecins autorisés, par trimestre (règle molle).
+    try{ R.n16Friday=n16FridayBalanceSanitize(months); }catch(e){ console.warn('n16FridayBalanceSanitize error:',e); }
     try{ R.pm16Double=pm16DoubleSanitize(months); }catch(e){ console.warn('pm16DoubleSanitize error:',e); }
     // [2026-10-17] Dernier filet du poste 14-22 (non impératif, donc absent de finalHoleFill) : 2 trous en T1 2027 (22/03, 24/03).
     try{ R.pm14Fill=pm14HoleFill(months); }catch(e){ console.warn('pm14HoleFill error:',e); }
@@ -14624,6 +14778,8 @@ async function confirmGenerate(){
   _restoreSnap(_best.snap); _assign(_best.R); window._genRunSeed=_best.seed;
   window._btViolations=_best.bt||[];
   try{ window.__polishStats=await _polish(); }catch(e){ console.warn('[POLISH]',e); }   // [2026-08-19] cf. ci-dessus : aligner le rapport sur le tirage RETENU
+  // [2026-11-21 N16-VENDREDI] l'amélioration progressive peut déplacer des n16 entre PH : équilibre des 18-09 du vendredi refait sur le tirage retenu (jours à venir)
+  try{ window.__n16Friday=n16FridayBalanceSanitize(months,new Set(_scopeKeys.filter(dk=>dk>=_todayDk))); }catch(e){ console.warn('n16FridayBalanceSanitize error:',e); }
   // [2026-11-15 DEMI-GARDE-WE] demi-gardes de WE de jour (règle de fiche), une seule fois, sur le tirage retenu ; consignées dans le journal des écarts
   try{ const _dg=demiGardeWEPass(months,_scopeKeys); window.__demiGardeWE=_dg; if(_dg.length){ window._btViolations=(window._btViolations||[]).concat(_dg); console.log('[DEMI-GARDE-WE]',_dg); } }catch(e){ console.warn('demiGardeWEPass error:',e); }
   // [2026-11-16 D6-REPRODUCTIBLE] fiche de reproduction : avec les mêmes données, ces valeurs redonnent le même planning
@@ -17966,6 +18122,12 @@ function generateAlgo(ptargets, genYear, genMonth){
         function hasN16InPeriod(docId){
           return relevantDays.some(d=>(shifts[d]||{})['n16']===docId);
         }
+        // [2026-11-21 N16-VENDREDI] Le vendredi (18-09), charge des 18-09 du trimestre rapportée à la part attendue (voir n16FridayBalanceSanitize)
+        let _n16FriLoad=null;
+        if(N16_FRIDAY_BALANCE_ON&&dowOf(dk)===5){
+          const _fq=n16FridaysOfQuarter(+dk.slice(0,4),Math.floor((+dk.slice(5,7)-1)/3)*3);
+          _n16FriLoad=new Map(n16Eligible.map(d=>{ const w=n16FridayWeight(d,_fq); return [d.id,w>0?n16FridayCount(d.id,_fq)/w:Infinity]; }));
+        }
 
         n16Eligible.sort((a,b)=>{
           // ⭐ Préférence explicite pour n16 ce jour
@@ -17981,6 +18143,8 @@ function generateAlgo(ptargets, genYear, genMonth){
           const aFree=hasN16InPeriod(a.id)?1:0;
           const bFree=hasN16InPeriod(b.id)?1:0;
           if(aFree!==bFree) return aFree-bFree;
+          // [2026-11-21 N16-VENDREDI] le vendredi : moins de 18-09 dans le trimestre (rapporté au temps de travail et au contrat)
+          if(_n16FriLoad){ const la=_n16FriLoad.get(a.id), lb=_n16FriLoad.get(b.id); if(Math.abs(la-lb)>1e-9) return la-lb; }
           // Équilibre secondaire : moins de gardes de nuit semaine ce mois
           const aN=(docGardesWeek[a.id]?Object.values(docGardesWeek[a.id]).reduce((s,v)=>s+v,0):0);
           const bN=(docGardesWeek[b.id]?Object.values(docGardesWeek[b.id]).reduce((s,v)=>s+v,0):0);
@@ -21956,7 +22120,7 @@ function exportAllIndivPDF(){
           const dateStr=`${dl} ${dk.slice(8,10)}/${dk.slice(5,7)}/${dk.slice(0,4)}`;
           const dur=exceptional?hours:postHours(post,dk);
           const isGarde=post.overnight||post.repos;
-          pages+=`<tr class="${we?'we':isGarde?'garde':''}"><td>${dateStr}</td><td>${post.name}</td><td>${post.full}</td><td>${post.start&&post.end?postStartFor(post,dk)+'–'+postEndFor(post,dk):'—'}</td><td class="tot">${dur.toFixed(1)}h</td></tr>`;
+          pages+=`<tr class="${we?'we':isGarde?'garde':''}"><td>${dateStr}</td><td>${postNameFor(post,dk)}</td><td>${postFullFor(post,dk)}</td><td>${post.start&&post.end?postStartFor(post,dk)+'–'+postEndFor(post,dk):'—'}</td><td class="tot">${dur.toFixed(1)}h</td></tr>`;
         });
       }
       myCongs.forEach(cg=>{
@@ -22033,7 +22197,7 @@ function exportIndivDocPDF(docId){
         const dateStr=`${dl} ${dk.slice(8,10)}/${dk.slice(5,7)}/${dk.slice(0,4)}`;
         const dur=exceptional?hours:postHours(post,dk);
         const isGarde=post.overnight||post.repos;
-        body+=`<tr class="${we?'we':isGarde?'garde':''}"><td>${dateStr}</td><td>${post.name}</td><td>${post.full}</td><td>${post.start&&post.end?postStartFor(post,dk)+'–'+postEndFor(post,dk):'—'}</td><td class="tot">${dur.toFixed(1)}h</td></tr>`;
+        body+=`<tr class="${we?'we':isGarde?'garde':''}"><td>${dateStr}</td><td>${postNameFor(post,dk)}</td><td>${postFullFor(post,dk)}</td><td>${post.start&&post.end?postStartFor(post,dk)+'–'+postEndFor(post,dk):'—'}</td><td class="tot">${dur.toFixed(1)}h</td></tr>`;
       });
     }
     if(myCongs.length>0){
@@ -23057,7 +23221,7 @@ function buildIndivHTML(doc,months,y){
     for(let d=1;d<=d2;d++){const dk=dkey(y,m,d);for(const [pid,docId] of dayEntries(dk)){if(docId===doc.id){const p=getPost(pid);if(p)myShifts.push({dk,post:postViewFor(dk,pid,doc.id,p),we:isWE(dk)});}}}
     const myCongs=indispos.filter(i=>i.docId===doc.id&&i.end>=dkey(y,m,1)&&i.start<=dkey(y,m,d2));
     const totalH=myShifts.reduce((s,x)=>s+postHours(x.post,x.dk),0);totalHAll+=totalH;
-    const rows=myShifts.length?myShifts.map(({dk,post,we})=>{const dt=new Date(dk+'T12:00:00');const dl=['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'][dt.getDay()];return `<tr${we?' class="we"':''}><td><strong>${dl} ${dk.slice(8,10)}/${dk.slice(5,7)}</strong></td><td><span class="badge" style="background:${post.color||'#475569'};">${post.name}</span></td><td>${post.full}</td><td>${postStartFor(post,dk)}–${postEndFor(post,dk)} (${postHours(post,dk).toFixed(1)}h)</td></tr>`;}).join(''):'<tr><td colspan="4" class="no-shift">Aucun shift ce mois</td></tr>';
+    const rows=myShifts.length?myShifts.map(({dk,post,we})=>{const dt=new Date(dk+'T12:00:00');const dl=['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'][dt.getDay()];return `<tr${we?' class="we"':''}><td><strong>${dl} ${dk.slice(8,10)}/${dk.slice(5,7)}</strong></td><td><span class="badge" style="background:${post.color||'#475569'};">${postNameFor(post,dk)}</span></td><td>${postFullFor(post,dk)}</td><td>${postStartFor(post,dk)}–${postEndFor(post,dk)} (${postHours(post,dk).toFixed(1)}h)</td></tr>`;}).join(''):'<tr><td colspan="4" class="no-shift">Aucun shift ce mois</td></tr>';
     const congRows=myCongs.map(cg=>{const tl={conge:'Congé',formation:'Formation',absent:'Absence prolongée',autre:'Autre'}[cg.type]||cg.type;const tc={conge:'#3b82f6',formation:'#a78bfa',absent:'#f87171',autre:'#94a3b8'}[cg.type]||'#94a3b8';return `<tr><td><span class="badge" style="background:${tc};">${tl}</span></td><td colspan="2">${cg.start} → ${cg.end}</td><td>${cg.note||''}</td></tr>`;}).join('');
     body+=`<div class="month-title">${MONTHS[m]} ${y} — ${myShifts.length} service${myShifts.length>1?'s':''} (${totalH.toFixed(1)}h)</div><table><thead><tr><th>Date</th><th>Poste</th><th>Désignation</th><th>Horaire</th></tr></thead><tbody>${rows}</tbody></table>${myCongs.length?`<div class="month-title" style="font-size:13px;border-color:#64748b;color:#64748b;">Congés</div><table><thead><tr><th>Type</th><th>Période</th><th></th><th>Note</th></tr></thead><tbody>${congRows}</tbody></table>`:''}`;
   });
@@ -23153,7 +23317,7 @@ function buildIndivPDF(doc, months, y, jsPDFLib){
         pdf.setFontSize(8); pdf.setFont('helvetica','normal');
         pdf.text(dateStr, marginL+2, y0+4);
         pdf.text(post.name, marginL+32, y0+4);
-        pdf.text(post.full.slice(0,30), marginL+55, y0+4);
+        pdf.text(postFullFor(post,dk).slice(0,30), marginL+55, y0+4);
         pdf.text(`${postStartFor(post,dk)}–${postEndFor(post,dk)}`, marginL+130, y0+4);
         pdf.text(`${postHours(post,dk).toFixed(1)}h`, marginL+160, y0+4);
         y0 += 5.5;
@@ -23370,7 +23534,7 @@ function generateIndivPlannings(){
       const myCongs=indispos.filter(i=>i.docId===doc.id&&i.end>=dkey(y,m,1)&&i.start<=dkey(y,m,d2));
       const totalH=myShifts.reduce((s,x)=>s+postHours(x.post,x.dk),0);totalHAll+=totalH;
       const rows=myShifts.length
-        ?myShifts.map(({dk,post,we})=>{const dt=new Date(dk+'T12:00:00');const dl=['Di','Lu','Ma','Me','Je','Ve','Sa'][dt.getDay()];return `<tr${we?' class="we"':''}><td><b>${dl} ${dk.slice(8,10)}/${dk.slice(5,7)}</b></td><td><span class="badge" style="background:${post.color||'#475569'};">${post.name}</span></td><td>${post.full}</td><td>${postStartFor(post,dk)}–${postEndFor(post,dk)} (${postHours(post,dk).toFixed(1)}h)</td></tr>`;}).join('')
+        ?myShifts.map(({dk,post,we})=>{const dt=new Date(dk+'T12:00:00');const dl=['Di','Lu','Ma','Me','Je','Ve','Sa'][dt.getDay()];return `<tr${we?' class="we"':''}><td><b>${dl} ${dk.slice(8,10)}/${dk.slice(5,7)}</b></td><td><span class="badge" style="background:${post.color||'#475569'};">${postNameFor(post,dk)}</span></td><td>${postFullFor(post,dk)}</td><td>${postStartFor(post,dk)}–${postEndFor(post,dk)} (${postHours(post,dk).toFixed(1)}h)</td></tr>`;}).join('')
         :'<tr><td colspan="4" class="no-shift">Aucun shift ce mois</td></tr>';
       const congRows=myCongs.map(cg=>{const tl={conge:'Congé',formation:'Formation',absent:'Absence prolongée',autre:'Autre'}[cg.type]||cg.type;const tc={conge:'#3b82f6',formation:'#a78bfa',absent:'#f87171',autre:'#94a3b8'}[cg.type]||'#94a3b8';const fmtD=d=>d.slice(8,10)+'-'+d.slice(5,7)+'-'+d.slice(0,4);
         return `<tr><td><span class="badge" style="background:${tc};">${tl}</span></td><td colspan="2">${fmtD(cg.start)} → ${fmtD(cg.end)}</td><td>${cg.note||''}</td></tr>`;}).join('');
@@ -23862,7 +24026,7 @@ async function publishToSupabase(silent=false, sendEmails=false){
       const {error}=await sbClient.from('planning_months').upsert({
         hospital_id:hospital, year:cy, month:m,
         shifts:monthShifts,
-        posts:posts.map(p=>({id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end})),
+        posts:posts.map(_postPublie),
         indispos:monthIndispos,
         locked:monthLocked,
         desiderata_deadline:deadline,
@@ -24145,7 +24309,7 @@ async function _exchPublishMonth(sb,monthPrefix){
     const {error}=await sb.from('planning_months').upsert({
       hospital_id:hospital, year:exchYear, month:exchMonth,
       shifts:monthShifts,
-      posts:posts.map(function(p){return {id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end};}),
+      posts:posts.map(_postPublie),
       indispos:monthIndispos,
       locked:(typeof lockedShifts!=='undefined'&&Array.isArray(lockedShifts))?lockedShifts.filter(function(l){return l&&typeof l.dk==='string'&&l.dk.indexOf(monthPrefix)===0;}):[],
       desiderata_deadline:deadline,
@@ -24223,7 +24387,7 @@ async function _exchPublier(sb,prep){
       try{
         const ddl=JSON.parse(localStorage.getItem('planningURG_desiderata_deadlines')||'{}');
         const qNum=Math.floor(m/3)+1, nextQNum=qNum>=4?1:qNum+1;
-        charge.posts=posts.map(function(p){return {id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end};});
+        charge.posts=posts.map(_postPublie);
         charge.indispos=indispos.filter(function(i){return i.end>=mp+'-01'&&i.start<=mp+'-31';});
         charge.locked=(typeof lockedShifts!=='undefined'&&Array.isArray(lockedShifts))?lockedShifts.filter(function(l){return l&&typeof l.dk==='string'&&l.dk.indexOf(mp)===0;}):[];
         charge.desiderata_deadline=ddl['t'+nextQNum]||null;
@@ -26125,7 +26289,7 @@ async function applyExchangeSwitch(id,selectedPosts){
     const {error:pubErr}=await sb.from('planning_months').upsert({
       hospital_id:hospital, year:exchYear, month:exchMonth,
       shifts:monthShifts,
-      posts:posts.map(function(p){return {id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end};}),
+      posts:posts.map(_postPublie),
       indispos:monthIndispos,
       // [2026-08-16] verrous du mois publiés avec le planning (cf. bouton Publier)
       locked:(typeof lockedShifts!=='undefined'&&Array.isArray(lockedShifts))?lockedShifts.filter(function(l){return l&&typeof l.dk==='string'&&l.dk.indexOf(monthPrefix)===0;}):[],
@@ -26317,7 +26481,7 @@ async function applyExchange(id){
     const {error:pubErr}=await sb.from('planning_months').upsert({
       hospital_id:hospital, year:exchYear, month:exchMonth,
       shifts:monthShifts,
-      posts:posts.map(function(p){return {id:p.id,name:p.name,full:p.full,color:p.color,section:p.section,avail:p.avail,start:p.start,end:p.end};}),
+      posts:posts.map(_postPublie),
       indispos:monthIndispos,
       // [2026-08-16] verrous du mois publiés avec le planning (cf. bouton Publier)
       locked:(typeof lockedShifts!=='undefined'&&Array.isArray(lockedShifts))?lockedShifts.filter(function(l){return l&&typeof l.dk==='string'&&l.dk.indexOf(monthPrefix)===0;}):[],
@@ -28022,7 +28186,7 @@ function exportPDF(mode){
       for(let d=1;d<=d2;d++){const dk=dkey(cy,cm,d);for(const [pid,docId] of dayEntries(dk)){if(docId===doc.id){const p=getPost(pid);if(p)shifts_doc.push({dk,post:postViewFor(dk,pid,doc.id,p)});}}}
       const totalH=shifts_doc.reduce((s,x)=>s+postHours(x.post,x.dk),0);
       html+=`<div class="${idx>0?'page-break':''}"><div class="doc-header"><div><h1>${doc.firstname} ${doc.lastname}</h1><div class="meta">${doc.role} · Cible ${doc.targetHours}h/sem · ${monthLabel}</div></div><div class="doc-badge">${totalH.toFixed(1)}h / mois</div></div><h2>Détail des shifts (${shifts_doc.length} service${shifts_doc.length>1?'s':''})</h2><table><thead><tr><th>Date</th><th>Poste</th><th>Horaire</th><th>Durée</th></tr></thead><tbody>`;
-      shifts_doc.forEach(({dk,post})=>{const we=isWE(dk);html+=`<tr class="day-row${we?' we':''}"><td>${formatDate(dk)}</td><td>${post.full}</td><td>${postStartFor(post,dk)}–${postEndFor(post,dk)}</td><td>${postHours(post,dk).toFixed(1)}h</td></tr>`;});
+      shifts_doc.forEach(({dk,post})=>{const we=isWE(dk);html+=`<tr class="day-row${we?' we':''}"><td>${formatDate(dk)}</td><td>${postFullFor(post,dk)}</td><td>${postStartFor(post,dk)}–${postEndFor(post,dk)}</td><td>${postHours(post,dk).toFixed(1)}h</td></tr>`;});
       html+=`</tbody></table></div>`;
     });
     printHTML(html,css);
@@ -28897,7 +29061,7 @@ function _rplRenderCands(c){
   let chainNote='';
   if(it.kind==='day') chainNote='Garde enchaînée : les médecins qui peuvent aussi assurer '+_rplPostName(it.chainPid)+' passent en tête (⛓).';
   else if(it.kind==='night') chainNote='Nuit enchaînée à '+_rplPostName(it.dayPid)+' : le médecin du jour est proposé en premier s\'il peut l\'enchaîner.';
-  let html='<div style="font-size:14px;font-weight:600;">'+_rplDay(it.dk)+' · '+_rplE(p?p.full||p.name:it.pid)+'</div>'
+  let html='<div style="font-size:14px;font-weight:600;">'+_rplDay(it.dk)+' · '+_rplE(p?postFullFor(p,it.dk):it.pid)+'</div>'
     +'<div style="font-size:11px;color:var(--t3);margin-top:2px;">'+(p?_rplE(postStartFor(p,it.dk)+'–'+postEndFor(p,it.dk)):'')+(chainNote?' · '+chainNote:'')+'</div>'
     +(it.shared?'':'<div style="margin-top:8px;"><button class="tb-ghost tb-btn" style="font-size:11px;"'+(it.assigned==null?' disabled':'')+' onclick="rplPick('+_rplSel+',null,false)">Laisser vide</button></div>');
   html+=secTitle('Éligibles — classement du moteur',c.ranked.length,'Même ordre que la fenêtre « Assigner ». Cliquez pour affecter. Heures'+(grp?' et '+grp.title:'')+' : déjà au planning ce mois-ci, sans ce poste ; survolez-les pour la cible.');
@@ -29339,7 +29503,7 @@ function _fxDayLines(dk){
   Object.keys(d).forEach(function(pid){
     var docId=d[pid]; if(!docId) return;
     var p=getPost(pid); if(!p) return;
-    var sh=sharedOn(dk,pid), hr=postStartFor(p,dk)+'–'+postEndFor(p,dk), cat=we?'we':(p.overnight?'nuit':'jour'), nm=p.full||p.name||pid;
+    var sh=sharedOn(dk,pid), hr=postStartFor(p,dk)+'–'+postEndFor(p,dk), cat=we?'we':(p.overnight?'nuit':'jour'), nm=postFullFor(p,dk)||pid;
     var h1=sh?(+sh.h1||0):postHours(p,dk);
     if(h1) out.push({doc:docId,d:dk,post:nm+(sh?' (partagé)':''),hr:hr,h:h1,cat:cat,garde:isGardePost(p)});
     if(sh&&(+sh.h2||0)) out.push({doc:sh.docId2,d:dk,post:nm+' (partagé)',hr:hr,h:+sh.h2,cat:cat,garde:isGardePost(p)});
