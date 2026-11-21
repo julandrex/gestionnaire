@@ -417,6 +417,9 @@ input[type=range]{accent-color:var(--accent);cursor:pointer;}
   .topbar-title{ display:none; }
   .shift-cell{ min-width:22px; height:24px; font-size:7px; }
 }
+/* [2026-11-21 R65] groupes d'échanges par date : flèche maison, pas de marqueur du navigateur */
+details[data-grp]>summary{ list-style:none; }
+details[data-grp]>summary::-webkit-details-marker{ display:none; }
 </style>
 <script>const _of=window.fetch.bind(window);window.fetch=function(u,o){if(typeof u==="string"&&u.includes("supabase.co")){if(u.includes("/doctors")){u=u.replace(/%22pin%22%2C/g,"").replace(/%2C%22pin%22/g,"");}if(o&&o.body&&typeof o.body==="string"){try{var _b=JSON.parse(o.body);var _c=function(d){if(d&&typeof d==="object"){delete d.pin;return d;}return d;};o.body=JSON.stringify(Array.isArray(_b)?_b.map(_c):_c(_b));}catch(e){}}}return _of(u,o);};/* [2026-09-11] secret admin retiré : écriture = compte Supabase Auth membre (admin_members) */
 </script>
@@ -24666,32 +24669,63 @@ function _exchFanHtml(g, dk, pid, hid, hName){
     +'</div></div>';
 }
 var _exchGrpOpen={};
+function _exchGrpToggle(el){ _exchGrpOpen[el.dataset.grp]=el.open; var f=el.querySelector('[data-fl]'); if(f) f.textContent=el.open?'▾':'▸'; }
+// [2026-11-21 R65] « À valider » = la proposition a fini le circuit du demandeur et de l'accepteur (statut 'accepted' :
+// le demandeur a choisi une proposition, ou le médecin ciblé a accepté) ; il ne reste que la décision du gestionnaire.
+// Les switchs lancés par le gestionnaire (pending_j1 / pending_switch) attendent encore les médecins : pastille à part.
+function _exchNbs(g){
+  var n={val:0,sw:0,att:0};
+  g.forEach(function(r){ if(r.status==='accepted') n.val++; else if(r.status==='pending_j1'||r.status==='pending_switch') n.sw++; else if(r.status==='open') n.att++; });
+  return n;
+}
+function _exchPills(n){
+  return (n.val?' <span data-pill="val" style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:11px;font-weight:700;white-space:nowrap;">'+n.val+' à valider</span>':'')
+    +(n.sw?' <span data-pill="sw" style="background:rgba(249,115,22,.16);color:#ea580c;border-radius:8px;padding:1px 7px;font-size:11px;font-weight:700;white-space:nowrap;">'+n.sw+' switch en attente</span>':'')
+    +(n.att?' <span data-pill="att" style="background:var(--bg3);color:var(--t2);border-radius:8px;padding:1px 7px;font-size:11px;white-space:nowrap;">'+n.att+' en attente</span>':'');
+}
+// [2026-11-21 R65] demande de G. Sorce : un groupe par DATE, FERMÉ par défaut sur une ligne (même s'il n'y a qu'une demande) ;
+// dans le groupe, les demandes restent rangées par poste (éventail des réponses quand il y en a plusieurs). L'état ouvert/fermé est retenu.
 function _exchGroupsHtml(list, card){
   var groups={}, order=[];
   list.forEach(function(r){ var k=_exchKey(r); if(!groups[k]){ groups[k]=[]; order.push(k); } groups[k].push(r); });
   order.sort(function(a,b){ return a<b?-1:a>b?1:0; });
-  return order.map(function(k){
+  var parJour={}, jours=[];
+  order.forEach(function(k){
     var g=groups[k].slice().sort(function(a,b){
       var pa=a.type==='exchange'&&!a.linked_exchange_id?0:1, pb=b.type==='exchange'&&!b.linked_exchange_id?0:1;
       return pa-pb||String(a.created_at).localeCompare(String(b.created_at));
     });
-    if(g.length===1) return card(g[0]);
     var dk=k.split('|')[0], pid=k.split('|')[1];
-    // [2026-11-05] déroulant : fermé par défaut, ouvert d'office s'il y a une proposition à valider ; l'état ouvert/fermé est retenu
-    var nVal=g.filter(function(r){ return r.status==='accepted'||r.status==='pending_j1'||r.status==='pending_switch'; }).length;
-    var nAtt=g.filter(function(r){ return r.status==='open'; }).length;
-    var on=(k in _exchGrpOpen)?_exchGrpOpen[k]:nVal>0;
     // [2026-11-07] nom du demandeur (titulaire du poste) : auteur de la demande d'origine, sinon destinataire d'une reprise / d'un échange rattaché
     var par=g.find(function(r){ return r.type==='exchange'&&!r.linked_exchange_id; });
     var hid=par?par.proposer_id:(function(r){ return (r.type==='reprise'||r.linked_exchange_id)?r.target_doctor_id:r.proposer_id; })(g[0]);
     var hd=(_exchDocs||[]).find(function(x){ return x.id==hid; });
     var hName=hd?((hd.firstname||'')+' '+(hd.lastname||'')).trim():'';
-    return '<details data-grp="'+repEsc(k)+'"'+(on?' open':'')+' ontoggle="_exchGrpOpen[this.dataset.grp]=this.open" style="border:1px solid var(--line2);border-left:3px solid var(--accent);border-radius:10px;margin:0 0 12px;background:var(--bg2);">'
-      +'<summary style="cursor:pointer;padding:10px 12px;font-size:13px;font-weight:700;color:var(--t1);list-style-position:inside;">📅 '+(dk?formatDate(dk):'?')+' — '+repEsc(_exPn(pid))
-      +(hName?' <span style="font-weight:600;color:var(--t2);">· '+repEsc(hName)+'</span>':'')+' <span style="font-weight:500;color:var(--t3);">· '+g.length+' demandes</span>'
-      +(nVal?' <span style="background:var(--accent);color:#fff;border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">'+nVal+' à valider</span>':'')
-      +(nAtt?' <span style="background:var(--bg3);color:var(--t2);border-radius:8px;padding:1px 7px;font-size:11px;margin-left:4px;">'+nAtt+' en attente</span>':'')
-      +'</summary><div style="padding:0 10px 4px;">'+_exchFanHtml(g,dk,pid,hid,hName)+g.map(card).join('')+'</div></details>';
+    if(!parJour[dk]){ parJour[dk]=[]; jours.push(dk); }
+    parJour[dk].push({k:k,g:g,pid:pid,hid:hid,hName:hName});
+  });
+  return jours.map(function(dk){
+    var sg=parJour[dk], tout=[]; sg.forEach(function(x){ tout=tout.concat(x.g); });
+    var n=_exchNbs(tout), gk='jour|'+dk;
+    var on=(gk in _exchGrpOpen)?_exchGrpOpen[gk]:false;
+    var resume=sg.map(function(x){ return repEsc(_exPn(x.pid))+(x.hName?' · '+repEsc(x.hName):''); }).join(' ; ');
+    var corps=sg.map(function(x){
+      if(x.g.length===1) return card(x.g[0]);
+      var nx=_exchNbs(x.g);
+      return '<div data-sousgrp="'+repEsc(x.k)+'" style="border-top:1px dashed var(--line2);padding-top:8px;margin-top:4px;">'
+        +(sg.length>1?'<div style="font-size:12.5px;font-weight:700;color:var(--t1);margin:0 2px 8px;">'+repEsc(_exPn(x.pid))
+          +(x.hName?' <span style="font-weight:600;color:var(--t2);">· '+repEsc(x.hName)+'</span>':'')
+          +' <span style="font-weight:500;color:var(--t3);">· '+x.g.length+' demandes</span>'+_exchPills(nx)+'</div>':'')
+        +_exchFanHtml(x.g,dk,x.pid,x.hid,x.hName)+x.g.map(card).join('')+'</div>';
+    }).join('');
+    return '<details data-grp="'+repEsc(gk)+'"'+(on?' open':'')+' ontoggle="_exchGrpToggle(this)" style="border:1px solid var(--line2);border-left:3px solid '+(n.val?'var(--accent)':'var(--line2)')+';border-radius:10px;margin:0 0 8px;background:var(--bg2);">'
+      +'<summary style="cursor:pointer;padding:9px 12px;font-size:13px;font-weight:700;color:var(--t1);display:flex;align-items:center;gap:8px;">'
+      +'<span data-fl style="flex-shrink:0;width:10px;">'+(on?'▾':'▸')+'</span>'
+      +'<span style="flex-shrink:0;white-space:nowrap;">📅 '+(dk&&dk!=='undefined'&&dk!=='null'?formatDate(dk):'?')+'</span>'
+      +'<span title="'+resume+'" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600;color:var(--t2);">'+resume+'</span>'
+      +'<span style="flex-shrink:0;font-weight:500;color:var(--t3);white-space:nowrap;">'+tout.length+' demande'+(tout.length>1?'s':'')+'</span>'
+      +'<span style="flex-shrink:0;display:flex;gap:4px;">'+_exchPills(n)+'</span>'
+      +'</summary><div style="padding:0 10px 4px;">'+corps+'</div></details>';
   }).join('');
 }
 function renderExchanges(){
