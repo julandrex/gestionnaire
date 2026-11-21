@@ -715,6 +715,7 @@ async function _jlxGenererGenerique(){
   (Array.isArray(lockedShifts)?lockedShifts:[]).forEach(function(l){ if(l&&jours.indexOf(l.dk)>=0) garde.add(l.dk+'|'+l.pid); });
   jours.forEach(function(dk){ if(dk<auj) Object.keys(shifts[dk]||{}).forEach(function(pid){ if(shifts[dk][pid]!=null) garde.add(dk+'|'+pid); }); });
   if(!confirm('Générer '+libelle+' pour '+_jlxHospName()+' ?\n\n'+garde.size+' case(s) verrouillée(s) ou déjà passée(s) conservée(s) ; les autres cases de la période seront remplacées.\nRien n\'est envoyé au serveur avant « Publier ».')) return;
+  _jlxInstantaneAvantGeneration(mois.map(function(m){ return [cy,m]; }),'moteur générique'); // [2026-11-21 LOT4-INSTANTANE]
   const entree={
     year:cy, months:mois, posts:posts, regles:cfg.regles||{}, gardePosts:cfg.gardePosts||[], essais:cfg.essais||8,
     docs:docs.filter(function(d){ return d.active!==false; }).map(function(d){ return {id:d.id,lastname:d.lastname,allowedPosts:d.allowedPosts||[],
@@ -752,7 +753,7 @@ async function _jlxPublierGenerique(silent,nt){
   if(!sb){ if(!silent) alert('Impossible de charger le client Supabase (connexion ?).'); return; }
   const bilan=[], errs=[];
   // a. Fiches
-  try{ const rf=await _jlxPublishFichesSeules(true); if(rf){ bilan.push(rf.msg.replace(/ Planning et configuration non publiés \(mode fiches seules\)\./,'')); errs.push.apply(errs,rf.errs||[]); } }
+  try{ const rf=await _jlxPublishFichesSeules(true,!silent); /* [2026-11-21 LOT4-FICHES] demander si publication manuelle */ if(rf){ bilan.push(rf.msg.replace(/ Planning et configuration non publiés \(mode fiches seules\)\./,'')); errs.push.apply(errs,rf.errs||[]); } }
   catch(e){ errs.push('Fiches : '+(e.message||e)); }
   // b. État partagé (postes, absences…) dans hospital_config.app_config.shared — sans les réglages propres à la Citadelle
   try{
@@ -1304,6 +1305,7 @@ document.addEventListener('DOMContentLoaded',function(){
         <button onclick="openIndivModal();toggleMainMenu()" class="mm-item">📁 Plannings individuels</button>
         <button onclick="openExportModal();toggleMainMenu()" class="mm-item">⬇ Export PDF mensuel</button>
         <button onclick="openVersionsMois();toggleMainMenu()" class="mm-item">🕓 Versions publiées du mois</button><!-- [2026-11-17 LOT4-VERSIONS] -->
+        <button onclick="openRetourAvantGeneration();toggleMainMenu()" class="mm-item">↶ Revenir à l'état d'avant la génération</button><!-- [2026-11-21 LOT4-INSTANTANE] -->
         <div style="height:1px;background:var(--line2);margin:3px 0;"></div>
         <button onclick="resetPlanning();toggleMainMenu()" class="mm-item" style="color:var(--warn);">↺ Réinit. planning</button>
       </div>
@@ -4061,6 +4063,156 @@ async function openVersionsMois(){
     const x=_jlxVersionReprendre(y,m,v); if(!x.ok){ alert(x.msg); return; }
     fermer(); showToast('Version reprise sur cet ordinateur. Rien n\'est publié : vérifiez, puis cliquez sur « Publier ».',6000);
   }; });
+}
+
+// ── [2026-11-21 LOT4-AILLEURS] Modifications faites ailleurs, POUR LE MÊME HÔPITAL seulement (audit, point D11) ─────────────────
+// Avant : chaque onglet garde son planning en mémoire ; le stockage du navigateur est commun : le dernier qui enregistre gagne, sans
+// prévenir. Une publication faite depuis un autre poste n'était découverte qu'au moment de publier.
+// Maintenant :
+//   (1) un autre onglet de CE navigateur enregistre le planning, les fiches, les absences ou les postes de CET hôpital → bandeau
+//       dans cet onglet, et « Publier » demande d'abord s'il faut recharger ;
+//   (2) cet onglet a des modifications non publiées et un mois de CET hôpital a été publié depuis un autre poste → bandeau.
+// Cloisonnement : un onglet appartient à un seul hôpital (changer d'hôpital recharge la page). Seules les clés EXACTES de son hôpital
+// sont écoutées (hospitalKey : « planningURG_shifts » pour la Citadelle, « planningURG_shifts_<hôpital> » pour les autres), et la
+// lecture du serveur est filtrée sur son hôpital : rien de ce qui se passe dans un autre hôpital ne s'affiche ici, et inversement.
+// Retour arrière : D11_AILLEURS_ON=false.
+const D11_AILLEURS_ON=true;
+const _D11_CLES={planningURG_shifts:'le planning',planningURG_lockedShifts:'les verrous',planningURG_exceptional:'les postes exceptionnels',
+  planningURG_sharedShifts:'les postes partagés',planningURG_indispos:'les absences',planningURG_docs:'les fiches des médecins',planningURG_posts:'les postes'};
+window._d11Raisons={}; window._jlxOngletPerime=null;
+function _d11Bandeau(){
+  let el=document.getElementById('d11-bandeau');
+  const textes=Object.keys(window._d11Raisons).filter(function(k){ return window._d11Raisons[k]; }).map(function(k){ return window._d11Raisons[k]; });
+  if(!textes.length){ if(el) el.remove(); return; }
+  if(!el){ el=document.createElement('div'); el.id='d11-bandeau'; document.body.appendChild(el); }
+  el.style.cssText='position:fixed;left:12px;right:12px;bottom:12px;z-index:9500;background:#78350f;color:#fff;border-radius:10px;padding:10px 14px;font-size:13px;line-height:1.45;box-shadow:0 6px 24px rgba(0,0,0,.45);display:flex;gap:12px;align-items:center;';
+  el.innerHTML='<div style="flex:1;">'+textes.map(function(x){ return '⚠️ '+escHtml(x); }).join('<br>')+'</div>'
+    +(window._d11Raisons.onglet?'<button id="d11-recharger" style="background:#fff;color:#78350f;border:none;border-radius:8px;padding:7px 12px;font-weight:700;cursor:pointer;white-space:nowrap;">Recharger cet onglet</button>':'')
+    +'<button id="d11-masquer" style="background:none;color:#fff;border:1px solid rgba(255,255,255,.5);border-radius:8px;padding:6px 10px;cursor:pointer;">Masquer</button>';
+  const r=document.getElementById('d11-recharger'); if(r) r.onclick=function(){ location.reload(); };
+  document.getElementById('d11-masquer').onclick=function(){ el.remove(); };
+}
+function _d11Raison(k,texte){ window._d11Raisons[k]=texte||null; try{ _d11Bandeau(); }catch(e){} }
+// Événement « storage » : appelé par le navigateur quand UN AUTRE onglet modifie le stockage commun.
+function _d11SurStockage(e){
+  if(!D11_AILLEURS_ON||!e||!e.key) return false;
+  const base=Object.keys(_D11_CLES).find(function(b){ return e.key===hospitalKey(b); }); // clé EXACTE de l'hôpital de cet onglet
+  if(!base) return false;
+  window._jlxOngletPerime={at:new Date().toISOString(),quoi:_D11_CLES[base]};
+  _d11Raison('onglet','Un autre onglet de ce navigateur a modifié '+_D11_CLES[base]+' de cet hôpital. Cet onglet n\'affiche pas ces modifications : rechargez-le avant de continuer.');
+  return true;
+}
+window.addEventListener('storage',_d11SurStockage);
+// Publication faite depuis un autre poste, pour l'hôpital de cet onglet, alors que cet onglet a des modifications non publiées.
+async function _d11VerifierPublicationsAilleurs(){
+  if(!D11_AILLEURS_ON) return null;
+  if(!_localEditsAfterLastPublish){ _d11Raison('serveur',null); return []; }
+  const H=currentHospitalId, sb=await getSbClient(); if(!sb) return null;
+  try{ const s=await sb.auth.getSession(); if(!(s&&s.data&&s.data.session)) return null; }catch(e){ return null; }
+  const {data,error}=await sb.from('planning_months').select('hospital_id,year,month,published_at').eq('hospital_id',H).in('year',[cy-1,cy,cy+1]);
+  if(error||!data||H!==currentHospitalId) return null;
+  const ailleurs=data.filter(function(r){ if(r.hospital_id!==H) return false;
+    const known=_knownPublishedAt[_jlxMoisCle(r.year,r.month)], a=Date.parse(r.published_at||''), b=Date.parse(known||'');
+    return isFinite(a)&&isFinite(b)&&a>b+1000; });
+  _d11Raison('serveur',ailleurs.length?('Publié depuis un autre poste : '+ailleurs.map(function(r){ return MONTHS[r.month]+' '+r.year+' ('+_jlxDateCourte(r.published_at)+')'; }).join(', ')
+    +'. Vos modifications non publiées n\'en tiennent pas compte : au moment de publier, le gestionnaire vous demandera quoi faire.'):null);
+  return ailleurs;
+}
+document.addEventListener('visibilitychange',function(){ if(document.visibilityState==='visible') _d11VerifierPublicationsAilleurs().catch(function(){}); });
+setInterval(function(){ if(document.visibilityState==='visible') _d11VerifierPublicationsAilleurs().catch(function(){}); },180000);
+// « Publier » depuis un onglet dépassé : on demande d'abord (publication manuelle seulement)
+publishToSupabase=(function(orig){ return async function(silent){
+  if(D11_AILLEURS_ON&&!silent&&window._jlxOngletPerime){
+    if(confirm('⚠️ '+window._jlxOngletPerime.quoi.charAt(0).toUpperCase()+window._jlxOngletPerime.quoi.slice(1)+' de cet hôpital ont été modifiés dans un autre onglet de ce navigateur ('+_jlxDateCourte(window._jlxOngletPerime.at)+').\n'
+      +'Cet onglet ne contient pas ces modifications : publier depuis ici peut les écraser.\n\n'
+      +'OK = recharger cet onglet d\'abord (recommandé ; vous retrouvez l\'état enregistré en dernier, rien n\'est publié)\n'
+      +'Annuler = publier quand même depuis cet onglet')){ location.reload(); return; }
+  }
+  return orig.apply(this,arguments);
+}; })(publishToSupabase);
+
+// ── [2026-11-21 LOT4-FICHES] Fiches de médecins modifiées depuis un autre poste (audit, point D11) ─────────────────────────────────
+// Avant : « Publier » renvoyait toutes les fiches de cet onglet ; une fiche modifiée (ou désactivée) depuis un autre poste après le
+// chargement de cet onglet était écrasée sans question (la Citadelle renvoyait même « active » pour toutes).
+// Maintenant : avant d'écrire, on compare la date de chaque fiche sur le serveur (lue pour l'hôpital de cet onglet seulement) à celle
+// que cet onglet connaît. Fiches plus récentes sur le serveur : on demande (publication manuelle) ; par défaut et en publication
+// automatique, la version du serveur est gardée et rechargée ici. Retour arrière : D11_FICHES_ON=false.
+const D11_FICHES_ON=true;
+function _d11ModifieAilleurs(r){
+  if(!r||r.local_id==null||!r.updated_at) return false;
+  const k=_knownDocsUpdatedAt[r.local_id]; if(!k) return false;
+  const a=Date.parse(r.updated_at), b=Date.parse(k); return isFinite(a)&&isFinite(b)&&a>b+1000;
+}
+// srvRows : fiches du serveur DE CET HÔPITAL (local_id, updated_at, active, firstname, lastname). Renvoie l'ensemble des local_id
+// dont la version du serveur doit être gardée.
+function _d11FichesAGarder(srvRows,demander){
+  if(!D11_FICHES_ON) return new Set();
+  const conf=(srvRows||[]).filter(function(r){ return docs.some(function(d){ return d.id===r.local_id; })&&_d11ModifieAilleurs(r); });
+  if(!conf.length) return new Set();
+  const tous=new Set(conf.map(function(r){ return r.local_id; }));
+  if(!demander) return tous;
+  const noms=conf.slice(0,15).map(function(r){ return '  · '+String(r.firstname||'')+' '+String(r.lastname||'')+(r.active===false?' (désactivée depuis l\'autre poste)':''); }).join('\n')+(conf.length>15?'\n  …':'');
+  return confirm('⚠️ '+conf.length+' fiche(s) de médecin ont été modifiées depuis un autre poste après le chargement de cet onglet :\n'+noms
+    +'\n\nOK = garder la version du serveur pour ces fiches (recommandé) : elles ne sont pas publiées depuis cet onglet, et la version du serveur est rechargée ici'
+    +'\nAnnuler = remplacer la version du serveur par celle de cet onglet')?tous:new Set();
+}
+
+// ── [2026-11-21 LOT4-INSTANTANE] Instantané avant chaque génération, et retour à l'état d'avant (audit, point M-6) ─────────────────
+// Avant : une génération remplaçait les mois de la période sans retour possible (hors versions publiées).
+// Maintenant : juste avant de générer, l'état des mois de la période (planning, postes exceptionnels et partagés, verrous) est gardé
+// sur cet ordinateur, pour l'hôpital de l'onglet (stockage propre à l'hôpital). Actions → « Revenir à l'état d'avant la génération »
+// le rétablit, sur cet ordinateur seulement : rien n'est publié. Un seul instantané par hôpital : la génération suivante le remplace.
+// Retour arrière : INSTANTANE_GEN_ON=false.
+const INSTANTANE_GEN_ON=true;
+function _jlxJoursDesMois(months){ const out=[]; (months||[]).forEach(function(ym){ const y=ym[0], m=ym[1], n=new Date(y,m+1,0).getDate(); for(let d=1;d<=n;d++) out.push(dkey(y,m,d)); }); return out; }
+function _jlxInstantaneAvantGeneration(months,origine){
+  if(!INSTANTANE_GEN_ON) return false;
+  try{
+    const jours=_jlxJoursDesMois(months), set=new Set(jours);
+    const ins={at:new Date().toISOString(),hopital:currentHospitalId,origine:origine||'',mois:(months||[]).map(function(ym){ return _jlxMoisCle(ym[0],ym[1]); }),
+      shifts:{},exc:{},shared:{},locked:(Array.isArray(lockedShifts)?lockedShifts:[]).filter(function(l){ return l&&set.has(l.dk); }).map(function(l){ return Object.assign({},l); })};
+    jours.forEach(function(dk){
+      if(shifts[dk]&&Object.keys(shifts[dk]).length) ins.shifts[dk]=Object.assign({},shifts[dk]);
+      if(typeof exceptionalShifts!=='undefined'&&exceptionalShifts&&exceptionalShifts[dk]) ins.exc[dk]=JSON.parse(JSON.stringify(exceptionalShifts[dk]));
+      if(typeof sharedShifts!=='undefined'&&sharedShifts&&sharedShifts[dk]) ins.shared[dk]=JSON.parse(JSON.stringify(sharedShifts[dk]));
+    });
+    lsSet('planningURG_avantGeneration',JSON.stringify(ins));
+    return true;
+  }catch(e){ console.warn('[instantané avant génération]',e); return false; }
+}
+function _jlxInstantaneLu(){ try{ const a=JSON.parse(lsGet('planningURG_avantGeneration')||'null'); return (a&&a.hopital===currentHospitalId&&Array.isArray(a.mois))?a:null; }catch(e){ return null; } }
+function _jlxRetourAvantGenerationEcart(a){
+  const set=new Set(); a.mois.forEach(function(mp){ set.add(mp); });
+  const cur={}, old={};
+  Object.keys(shifts).forEach(function(dk){ if(set.has(dk.slice(0,7))) Object.keys(shifts[dk]||{}).forEach(function(p){ if(shifts[dk][p]!=null&&shifts[dk][p]!=='') cur[dk+'|'+p]=String(shifts[dk][p]); }); });
+  Object.keys(a.shifts||{}).forEach(function(dk){ Object.keys(a.shifts[dk]||{}).forEach(function(p){ if(a.shifts[dk][p]!=null&&a.shifts[dk][p]!=='') old[dk+'|'+p]=String(a.shifts[dk][p]); }); });
+  return _jlxEcartCases(cur,old);
+}
+// Rétablit les mois de l'instantané SUR CET ORDINATEUR. N'écrit rien dans la base.
+function _jlxRetourAvantGeneration(a){
+  a=a||_jlxInstantaneLu(); if(!a) return {ok:false,msg:'Aucune génération enregistrée sur cet ordinateur pour cet hôpital.'};
+  const set=new Set(a.mois);
+  const dansMois=function(dk){ return typeof dk==='string'&&set.has(dk.slice(0,7)); };
+  Object.keys(shifts).forEach(function(dk){ if(dansMois(dk)) delete shifts[dk]; });
+  Object.keys(a.shifts||{}).forEach(function(dk){ if(dansMois(dk)) shifts[dk]=Object.assign({},a.shifts[dk]); });
+  if(typeof exceptionalShifts!=='undefined'&&exceptionalShifts){ Object.keys(exceptionalShifts).forEach(function(dk){ if(dansMois(dk)) delete exceptionalShifts[dk]; });
+    Object.keys(a.exc||{}).forEach(function(dk){ if(dansMois(dk)) exceptionalShifts[dk]=JSON.parse(JSON.stringify(a.exc[dk])); }); }
+  if(typeof sharedShifts!=='undefined'&&sharedShifts){ Object.keys(sharedShifts).forEach(function(dk){ if(dansMois(dk)) delete sharedShifts[dk]; });
+    Object.keys(a.shared||{}).forEach(function(dk){ if(dansMois(dk)) sharedShifts[dk]=JSON.parse(JSON.stringify(a.shared[dk])); }); }
+  if(Array.isArray(lockedShifts)) lockedShifts=lockedShifts.filter(function(l){ return !(l&&dansMois(l.dk)); }).concat((a.locked||[]).filter(function(l){ return l&&dansMois(l.dk); }));
+  saveShifts(); saveLockedShifts();
+  try{ render(); }catch(e){}
+  return {ok:true,mois:a.mois};
+}
+function openRetourAvantGeneration(){
+  const a=_jlxInstantaneLu();
+  if(!a){ alert('Aucune génération enregistrée sur cet ordinateur pour cet hôpital.'); return; }
+  const n=_jlxRetourAvantGenerationEcart(a), lib=a.mois.map(_jlxNomMois).join(', ');
+  if(!n){ alert('Le planning de '+lib+' est déjà identique à l\'état d\'avant la génération du '+_jlxDateCourte(a.at)+'.'); return; }
+  if(!confirm('Revenir à l\'état d\'avant la génération du '+_jlxDateCourte(a.at)+' ?\n\nPériode : '+lib+'\n'+n+' case(s) changent sur cet ordinateur.'
+    +'\nLes modifications faites à la main sur ces mois depuis cette génération sont annulées aussi.\n\nRien n\'est publié.')) return;
+  const x=_jlxRetourAvantGeneration(a); if(!x.ok){ alert(x.msg); return; }
+  showToast('↶ '+lib+' : retour à l\'état d\'avant la génération, sur cet ordinateur. Rien n\'est publié.',6000);
 }
 
 async function resetPlanning(){
@@ -13921,6 +14073,7 @@ async function confirmGenerate(){
     }
   }
 
+  _jlxInstantaneAvantGeneration(months,'moteur'); // [2026-11-21 LOT4-INSTANTANE]
   const setProgress=(pct,text)=>{
     document.getElementById('gen-msg').textContent=text;
     document.getElementById('gen-fill').style.width=pct+'%';
@@ -23375,15 +23528,16 @@ function _jlxSrvAsDoc(r){ const x=r.extra_profile||{};
     allowedPosts:x.allowedPosts||[], unavailDow:x.unavailDow||[], nightBeforeUnavailOk:x.nightBeforeUnavailOk||false,
     constraints:x.constraints||[], rules:x.rules||[], initials:x.initials||'', congeDroit:x.congeDroit!=null?x.congeDroit:null };
 }
-async function _jlxPublishFichesSeules(silent){
+async function _jlxPublishFichesSeules(silent,demander){ // [2026-11-21 LOT4-FICHES] + demander
   const hospital=currentHospitalId;
   if(!_jlxModeFiches()||!hospital) return;
   const sb=await getSbClient();
   if(!sb){ if(!silent) alert('Impossible de charger le client Supabase (connexion ?).'); return; }
   const {data:srv,error:e0}=await sb.from('doctors')
-    .select('local_id,firstname,lastname,role,color,active,email,target_hours,contract_start,contract_end,special_case,biemar,admin_doc,extra_profile')
+    .select('local_id,firstname,lastname,role,color,active,email,target_hours,contract_start,contract_end,special_case,biemar,admin_doc,extra_profile,updated_at')
     .eq('hospital_id',hospital);
   if(e0||!srv){ if(!silent) alert('Publication annulée : fiches du serveur illisibles ('+((e0&&e0.message)||'réponse vide')+').'); return; }
+  const _d11Garder=_d11FichesAGarder(srv,demander!==undefined?demander:!silent); // [2026-11-21 LOT4-FICHES]
   const byId={}; srv.forEach(function(r){ if(r.local_id!=null) byId[r.local_id]=r; });
   const nowIso=new Date().toISOString(); let nMod=0,nNew=0,nOff=0; const errs=[]; let _impPurge=false;
   for(const d of docs){
@@ -23394,6 +23548,7 @@ async function _jlxPublishFichesSeules(silent){
         if(error) throw error; nNew++; _knownDocsUpdatedAt[d.id]=nowIso; if(d._loginImport){ delete d._loginImport; _impPurge=true; } continue;
       }
       if(r.active===false){ errs.push(d.lastname+' : fiche désactivée sur le serveur, non modifiée'); continue; }
+      if(_d11Garder.has(d.id)){ errs.push(d.lastname+' : fiche modifiée depuis un autre poste, version du serveur gardée'); continue; } // [2026-11-21 LOT4-FICHES]
       const ref=_jlxFicheRow(_jlxSrvAsDoc(r)), patch={};
       // Identité, fonction, e-mail, contrat, heures et (lot 6) profil : postes autorisés, règles, contraintes.
       ['firstname','lastname','role','email','target_hours','contract_start','contract_end','extra_profile'].forEach( /* [2026-10-27 lot 6] + postes autorisés, règles */function(k){ if(JSON.stringify(loc[k])!==JSON.stringify(ref[k])) patch[k]=loc[k]; });
@@ -23414,6 +23569,7 @@ async function _jlxPublishFichesSeules(silent){
   deletedDocIds=deletedDocIds.filter(function(id){ return !docs.some(function(d){ return d.id===id; })&&byId[id]&&byId[id].active!==false&&!(nOff&&offIds.includes(id)); });
   try{lsSet('planningURG_deletedDocIds',JSON.stringify(deletedDocIds));}catch(e){}
   try{ authLog('publish','fiches seules '+hospital+' : '+nMod+' modifiée(s), '+nNew+' ajoutée(s), '+nOff+' désactivée(s)'); }catch(e){}
+  if(_d11Garder.size) setTimeout(function(){ try{ resyncDocsFromSupabase({silent:true}); }catch(e){} },0); // [2026-11-21 LOT4-FICHES]
   const msg='Fiches de '+_jlxHospName()+' : '+nMod+' modifiée(s), '+nNew+' ajoutée(s), '+nOff+' désactivée(s). Planning et configuration non publiés (mode fiches seules).';
   if(errs.length){ if(!silent) alert('⚠️ '+msg+'\n\nErreurs :\n'+errs.join('\n')); else console.warn('[fiches seules]',errs); }
   else if(!silent) showToast('✅ '+msg,5000);
@@ -23500,8 +23656,16 @@ async function publishToSupabase(silent=false, sendEmails=false){
   }
 
   // 1. Synchroniser les médecins
+  const _d11Infos=[]; // [2026-11-21 LOT4-FICHES]
   try{
     const _docsNowIso=new Date().toISOString();
+    // [2026-11-21 LOT4-FICHES] fiches modifiées depuis un autre poste (lecture limitée à l'hôpital de cet onglet)
+    let _d11Garder=new Set();
+    try{
+      const {data:_srvDates,error:_eDates}=await sbClient.from('doctors').select('local_id,updated_at,active,firstname,lastname').eq('hospital_id',hospital);
+      if(_eDates) throw _eDates;
+      _d11Garder=_d11FichesAGarder(_srvDates,!silent);
+    }catch(_e){ console.warn('[publish] dates des fiches non lues :',_e); }
     // [2026-09-23] Initiales : une copie locale qui ne les a pas (vide) ne doit pas effacer celles du serveur.
     // Constaté : une publication du 23/09 a vidé les initiales de 41 médecins sur 73. On reprend alors la valeur serveur.
     try{
@@ -23509,7 +23673,7 @@ async function publishToSupabase(silent=false, sendEmails=false){
       (_srvDocs||[]).forEach(function(r){ const v=String((r.extra_profile||{}).initials||'').trim();
         if(!v) return; const d=docs.find(function(x){return x.id===r.local_id;}); if(d&&!String(d.initials||'').trim()) d.initials=v; });
     }catch(_e){ console.warn('[publish] initiales serveur non lues :',_e); }
-    const docRows=docs.map(d=>({
+    const docRows=docs.filter(d=>!_d11Garder.has(d.id)).map(d=>({ // [2026-11-21 LOT4-FICHES]
       local_id:d.id, hospital_id:hospital,
       firstname:d.firstname, lastname:d.lastname,
       role:d.role, color:d.color,
@@ -23535,7 +23699,9 @@ async function publishToSupabase(silent=false, sendEmails=false){
     }));
     const {error}=await sbClient.from('doctors').upsert(docRows,{onConflict:'hospital_id,local_id'});
     if(error)throw error;
-    docs.forEach(function(d){ _knownDocsUpdatedAt[d.id]=_docsNowIso; });
+    docs.forEach(function(d){ if(!_d11Garder.has(d.id)) _knownDocsUpdatedAt[d.id]=_docsNowIso; });
+    if(_d11Garder.size){ _d11Infos.push(_d11Garder.size+' fiche(s) modifiée(s) depuis un autre poste : version du serveur gardée, rechargée sur cet ordinateur'); // [2026-11-21 LOT4-FICHES]
+      setTimeout(function(){ try{ resyncDocsFromSupabase({silent:true}); }catch(e){} },0); }
     ok++;
   }catch(e){errs.push('Médecins : '+e.message);}
 
@@ -23601,7 +23767,7 @@ async function publishToSupabase(silent=false, sendEmails=false){
   //   · vidé volontairement par « Réinitialiser le planning » → supprimé du serveur après une confirmation qui nomme les mois ;
   //   · lecture du serveur impossible → aucun mois n'est publié ni supprimé.
   const _mk=m=>`${cy}-${('0'+(m+1)).slice(-2)}`;
-  const _infos=[]; // remarques affichées en fin de publication (ne sont pas des erreurs)
+  const _infos=_d11Infos.slice(); // remarques affichées en fin de publication (ne sont pas des erreurs) — [2026-11-21 LOT4-FICHES]
   let _srv=null;   // {mois:{n,shifts,locked,published_at}} — état du serveur pour l'année affichée
   try{
     const {data:_rows,error:_eRows}=await sbClient.from('planning_months')
