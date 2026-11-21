@@ -13652,14 +13652,29 @@ function solveurBrouillon(sol){
     (partages[o.dk]=partages[o.dk]||{})[o.pid]={docId2:o.second,mode:'split',h1:o.heures,h2:Math.max(0,Math.round((tot-o.heures)*100)/100),auto:AUTO}; });
   return {shifts:nouv,partages};
 }
+// [2026-11-21 SOLVEUR-ERREURS] Erreurs par type, planning actuel contre brouillon, et liste des erreurs NOUVELLES du brouillon
+// (même type et même détail absents du planning actuel) : on voit d'un coup d'œil ce que le solveur a créé ou supprimé.
+function solveurTableErreurs(av,ap){
+  const types=[...new Set(Object.keys(av.detailErr||{}).concat(Object.keys(ap.detailErr||{})))];
+  if(!types.length) return '';
+  const reste={}; (av.errListe||[]).forEach(e=>{ const k=e.t+'|'+e.d; reste[k]=(reste[k]||0)+1; });
+  const nouv={}; (ap.errListe||[]).forEach(e=>{ const k=e.t+'|'+e.d; if(reste[k]) reste[k]--; else (nouv[e.t]=nouv[e.t]||[]).push(e.d); });
+  types.sort((x,y)=>((ap.detailErr[y]||0)-(ap.detailErr[x]||0))||((av.detailErr[y]||0)-(av.detailErr[x]||0))||x.localeCompare(y));
+  const nbNouv=Object.values(nouv).reduce((a,l)=>a+l.length,0);
+  return '<table style="border-collapse:collapse;font-size:11.5px;width:100%;margin-bottom:8px;"><tr style="color:var(--t3);font-size:11px;"><td style="padding:2px 8px;">Erreurs par type</td><td style="padding:2px 8px;text-align:right;">Planning actuel</td><td style="padding:2px 8px;text-align:right;">Brouillon</td><td style="padding:2px 8px;">Nouvelles dans le brouillon</td></tr>'
+    +types.map(t=>{ const a=av.detailErr[t]||0, b=ap.detailErr[t]||0, l=nouv[t]||[];
+      return '<tr><td style="padding:2px 8px;">'+escHtml(t)+'</td><td style="padding:2px 8px;text-align:right;">'+a+'</td><td style="padding:2px 8px;text-align:right;font-weight:700;color:'+(b<a?'var(--ok)':b>a?'var(--err)':'var(--t1)')+';">'+b+'</td>'
+        +'<td style="padding:2px 8px;color:'+(l.length?'var(--err)':'var(--t3)')+';">'+(l.length?escHtml(l.slice(0,4).join(' ; '))+(l.length>4?' ; … (+'+(l.length-4)+')':''):'aucune')+'</td></tr>'; }).join('')
+    +'</table><p style="font-size:11px;color:var(--t3);margin:0 0 8px;">'+(nbNouv?nbNouv+' erreur(s) du brouillon n’existai(en)t pas dans le planning actuel (détail ci-dessus) ; les autres y étaient déjà.':'Aucune erreur du brouillon n’est nouvelle : elles existaient toutes dans le planning actuel.')+'</p>';
+}
 function solveurMesurer(variante){ // mesures du planning de la période (variante = {shifts, partages} ou null pour l'actuel)
   const X=_solv.X, months=_solv.months, sS={}, sP={}, sCy=cy, sCm=cm;
   X.jours.forEach(dk=>{ sS[dk]=shifts[dk]; sP[dk]=sharedShifts[dk]; });
-  const res={vides:0,erreurs:0,avert:0,souhaits:0,souhaitsTot:0,ecartH:0,detailErr:{}};
+  const res={vides:0,erreurs:0,avert:0,souhaits:0,souhaitsTot:0,ecartH:0,detailErr:{},errListe:[]}; // [2026-11-21 SOLVEUR-ERREURS] errListe : chaque erreur (type + détail) pour repérer celles qui sont nouvelles
   try{
     if(variante) X.jours.forEach(dk=>{ shifts[dk]=Object.assign({},variante.shifts[dk]||{}); if(variante.partages[dk]) sharedShifts[dk]=JSON.parse(JSON.stringify(variante.partages[dk])); else delete sharedShifts[dk]; });
     try{ res.vides=checkStaffingMinimum(months).length; }catch(e){}
-    months.forEach(([y,m])=>{ cy=y; cm=m; getAllConflicts().forEach(x=>{ if(x.type==='err'){ res.erreurs++; res.detailErr[x.title]=(res.detailErr[x.title]||0)+1; } else if(x.type==='warn') res.avert++; }); });
+    months.forEach(([y,m])=>{ cy=y; cm=m; getAllConflicts().forEach(x=>{ if(x.type==='err'){ res.erreurs++; res.detailErr[x.title]=(res.detailErr[x.title]||0)+1; res.errListe.push({t:x.title,d:String(x.desc||'')}); } else if(x.type==='warn') res.avert++; }); });
     const prefs=indispos.filter(i=>i.type==='pref'&&i.end>=X.jours[0]&&i.start<=X.jours[X.jours.length-1]); res.souhaitsTot=prefs.length;
     res.souhaits=prefs.filter(i=>X.jours.some(dk=>dk>=i.start&&dk<=i.end&&Object.entries(shifts[dk]||{}).some(([p,v])=>v===i.docId&&(!i.posteId||prefMatchesPost(i.posteId,p))))).length;
     const h={}; months.forEach(([y,m])=>{ const hm=computeHoursForMonthWorked(y,m); Object.entries(hm).forEach(([id,v])=>{ h[id]=(h[id]||0)+(v||0); }); });
@@ -13710,7 +13725,7 @@ function solveurTerminer(){
     +ligne('Week-ends de garde consécutifs (PH, doublure comprise)',av.weConsec,ap.weConsec,true)
     +ligne('Vendredis de garde d\'affilée',av.vendConsec,ap.vendConsec,true)+'</table>'
     +'<p style="font-size:11px;color:var(--t3);margin:0 0 8px;">Le solveur équilibre aussi la répartition des postes entre médecins d\'un même grade et les nuits du vendredi ; ces deux points ne sont pas chiffrés ici.</p>'
-    +(Object.keys(ap.detailErr).length?'<p style="font-size:11px;color:var(--t3);margin:0 0 8px;">Erreurs du brouillon : '+Object.entries(ap.detailErr).map(([k,v])=>escHtml(k)+' ('+v+')').join(' · ')+'</p>':'')
+    +solveurTableErreurs(av,ap)
     +'<div style="max-height:34vh;overflow-y:auto;border:1px solid var(--line);border-radius:8px;"><table style="border-collapse:collapse;font-size:11.5px;width:100%;">'
     +chg.slice(0,400).map(c=>'<tr><td style="padding:2px 8px;white-space:nowrap;">'+escHtml(formatDate(c.dk))+'</td><td style="padding:2px 8px;">'+escHtml(pn(c.pid))+'</td><td style="padding:2px 8px;color:var(--t3);">'+escHtml(c.ta)+'</td><td style="padding:2px 8px;">→ <b>'+escHtml(c.tb)+'</b></td></tr>').join('')
     +'</table></div>'+(chg.length>400?'<p style="font-size:11px;color:var(--t3);">… et '+(chg.length-400)+' autre(s).</p>':'');
