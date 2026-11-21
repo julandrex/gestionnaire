@@ -12770,8 +12770,15 @@ const _DEMI_GARDE_AUTO='demi-garde-we';
 function demiGardeWEClear(keys){        // retire les demi-gardes posées par une génération précédente (le second reprend la garde entière)
   let n=0;
   (keys||[]).forEach(dk=>{ const d=sharedShifts[dk]; if(!d) return;
-    Object.keys(d).forEach(pid=>{ const sh=d[pid]; if(!sh||sh.auto!==_DEMI_GARDE_AUTO||isShiftLocked(dk,pid)) return;
-      if(shifts[dk]&&sh.docId2!=null) shifts[dk][pid]=sh.docId2;
+    Object.keys(d).forEach(pid=>{ const sh=d[pid]; if(!sh||sh.auto!==_DEMI_GARDE_AUTO) return;
+      // [2026-11-21 DEMI-VERROU] un verrou ne protège la demi-garde que si les postes pré-encodés sont CONSERVÉS : avec « tout régénérer »,
+      // le moteur réattribuait la case en laissant le partage en place (titulaire changé, ancien second gardé : « Canbay/Milet » du 17/04/2027).
+      // Une demi-garde dont le titulaire n'a plus la règle sur ce poste est un reste incohérent : retirée même verrouillée (le titulaire garde la case).
+      const H=(shifts[dk]||{})[pid], HD=docs.find(x=>x.id===H);
+      const coherent=!!HD&&(HD.rules||[]).some(r=>r&&r.type==='we_half_day_month'&&r.active!==false&&(r.posts||[]).includes(pid));
+      const verrou=!!window._keepLocked&&isShiftLocked(dk,pid);
+      if(verrou&&coherent) return;
+      if(!verrou&&shifts[dk]&&sh.docId2!=null) shifts[dk][pid]=sh.docId2;
       delete d[pid]; n++; });
     if(!Object.keys(d).length) delete sharedShifts[dk]; });
   return n;
