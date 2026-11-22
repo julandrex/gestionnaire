@@ -10832,6 +10832,7 @@ function showReposViolationRescueAlert(result){
 }
 /* @@JLX-FIN gestionnaire_js/moteur_secours.js */
 
+/* @@JLX-DEBUT gestionnaire_js/moteur_equilibre.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 // ── PASSE RÉÉQUILIBRAGE FINAL (équité gardes WE + pm16) ─────────────────────
 // [2026-07-17] Mécanise les corrections manuelles post-génération : toutes les
 // passes précédentes REMPLISSENT des trous, aucune ne redistribue des postes déjà
@@ -12098,6 +12099,7 @@ function showRebalanceAlert(swaps){
   document.body.appendChild(overlay);
   return true;
 }
+/* @@JLX-FIN gestionnaire_js/moteur_equilibre.js */
 
 // ── Filet de sécurité : aucune double-affectation incompatible ─────────────
 // [FIX 2026-07-15] Un médecin ne doit jamais se retrouver sur 2 postes du même jour
@@ -12113,6 +12115,7 @@ const DOUBLE_BOOKING_KEEP_PRIORITY=['coord-n','satmu-n','smur-n','coord','a','b'
   'admin','circuit','smur-j','satmu-j','pm16','pm14','doub-coord','doub-smur',
   'c','d','u3-1','u3-2','u3-3','u3-4','u3-5'];
 /* @@JLX-FIN gestionnaire_js/paires.js */
+/* @@JLX-DEBUT gestionnaire_js/moteur_passes.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 // [DEBUG 2026-07-18h] Traceur de double-affectations : appelé après chaque passe
 // avec un label — mémorise la PREMIÈRE passe où chaque doublon non légitime
 // apparaît (window._dblTrace + console.warn), pour identifier l'écrivain
@@ -14035,6 +14038,7 @@ function showDoubleBookingAlert(fixed){
   document.body.appendChild(overlay);
   return true;
 }
+/* @@JLX-FIN gestionnaire_js/moteur_passes.js */
 
 function setGenMode(mode, el){
   genMode=mode;
