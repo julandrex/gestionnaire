@@ -9677,6 +9677,7 @@ function exportDirectionCSV(){
    par nom de médecin dans generateAlgo()
 ══════════════════════════════════════════ */
 
+/* @@JLX-DEBUT gestionnaire_js/regles_fiche.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 const RULE_TYPES = {
   ALWAYS_SCHEDULE:        'always_schedule',
   MONTHLY_POST_MANDATORY: 'monthly_post_mandatory',
@@ -9761,6 +9762,7 @@ const RULE_DESCS = {
 // Postes exemptés de la règle only_24h (les "gardes 24h" elles-mêmes : chaînage
 // jour+nuit en semaine et gardes WE) — ne comptent jamais comme un "autre poste".
 const ONLY_24H_EXEMPT_POSTS = ['coord','a','b','coord-n','satmu-n','smur-n','we-coord','we-satmu','we-smur-sat','we-smur-sun'];
+/* @@JLX-FIN gestionnaire_js/regles_fiche.js */
 
 // ── Picker de postes réutilisable (grille de cases à cocher colorées, comme dans le profil médecin) ──
 function postPickerHtml(selectedPids) {
@@ -12100,11 +12102,13 @@ function showRebalanceAlert(swaps){
 // voir échange du 2026-07-15 concernant STECKX pm16+SATMU-N du 20/07), cette passe le
 // détecte et le corrige systématiquement en fin de génération : retire le(s) poste(s)
 // en trop, en gardant en priorité les gardes/chaînages, jamais les deux à la fois.
+/* @@JLX-DEBUT gestionnaire_js/paires.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 const LEGIT_COMBO_PAIRS=new Set(['coord,coord-n','b,smur-n','a,satmu-n','admin,coord-n','admin,smur-n','admin,satmu-n','doub-coord,smur-n','doub-smur,smur-n']);
 const DOUBLE_BOOKING_KEEP_PRIORITY=['coord-n','satmu-n','smur-n','coord','a','b',
   'we-coord','we-satmu','we-smur-sat','we-smur-sun','we-doublure',
   'admin','circuit','smur-j','satmu-j','pm16','pm14','doub-coord','doub-smur',
   'c','d','u3-1','u3-2','u3-3','u3-4','u3-5'];
+/* @@JLX-FIN gestionnaire_js/paires.js */
 // [DEBUG 2026-07-18h] Traceur de double-affectations : appelé après chaque passe
 // avec un label — mémorise la PREMIÈRE passe où chaque doublon non légitime
 // apparaît (window._dblTrace + console.warn), pour identifier l'écrivain
