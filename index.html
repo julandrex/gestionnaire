@@ -14883,7 +14883,7 @@ async function confirmGenerate(){
     // [2026-10-21] Équilibrage final des nuits du vendredi du trimestre (règle molle), avant le filet des 16-00.
     try{ R.fridayBalance=fridayBalanceSanitize(months); }catch(e){ console.warn('fridayBalanceSanitize error:',e); }
     // [2026-11-21 N16-VENDREDI] Équilibre des 18-09 du vendredi (n16) entre les médecins autorisés, par trimestre (règle molle).
-    try{ R.n16Friday=n16FridayBalanceSanitize(months); }catch(e){ console.warn('n16FridayBalanceSanitize error:',e); }
+    try{ R.n16Friday=n16FridayBalanceSanitize(months,new Set(_scopeKeys.filter(dk=>dk>=_todayDk))); }catch(e){ console.warn('n16FridayBalanceSanitize error:',e); } // [2026-11-22 N16-JOURS-PASSES] jours à venir seulement : les jours passés sont remis à l'identique après chaque tirage, un déplacement fait là s'écrivait au journal puis disparaissait
     try{ R.pm16Double=pm16DoubleSanitize(months); }catch(e){ console.warn('pm16DoubleSanitize error:',e); }
     // [2026-10-17] Dernier filet du poste 14-22 (non impératif, donc absent de finalHoleFill) : 2 trous en T1 2027 (22/03, 24/03).
     try{ R.pm14Fill=pm14HoleFill(months); }catch(e){ console.warn('pm14HoleFill error:',e); }
@@ -15749,6 +15749,26 @@ function generateAlgo(ptargets, genYear, genMonth){
     docAssPostWeek[d.id]={};
     docWeDoublMonth[d.id]=0;
   });
+  // [2026-11-14 HEURE_ENCHAINEE] Le comptage interne du générateur (docH) additionne les postes un par un. Or un poste de jour finissant
+  // à 18 h enchaîné avec SMUR-N (19 h) fait travailler l'heure intermédiaire (voir chainGapHours). Plutôt que de corriger les ~70 endroits
+  // qui ajoutent ou retirent des heures, on recale docH sur l'état réel de shifts au début de chaque passe journalière : la somme des
+  // écarts enchaînés du mois est comparée à celle déjà ajoutée et la différence est reportée. docH reste donc exact à un jour près.
+  let _gapApplied={};
+  const _engGapSync=()=>{
+    const g={};
+    for(let d=1;d<=d2;d++){
+      const dk=dkey(gy,gm,d), day=shifts[dk]; if(!day) continue;
+      const ids=new Set();
+      Object.entries(day).forEach(([pid,did])=>{ if(did) ids.add(did); const sh=sharedOn(dk,pid); if(sh&&sh.docId2!=null) ids.add(sh.docId2); });
+      ids.forEach(id=>{ const x=chainGapHours(dk,id); if(x) g[id]=(g[id]||0)+x; });
+    }
+    new Set([...Object.keys(g),...Object.keys(_gapApplied)]).forEach(k=>{
+      if(docH[k]===undefined) return;
+      const delta=(g[k]||0)-(_gapApplied[k]||0); if(delta) docH[k]+=delta;
+    });
+    _gapApplied=g;
+  };
+
   // [2026-07-27] POSTES PRÉ-ENCODÉS (verrouillés) : semer les compteurs-plafonds du mois à partir
   // des postes déjà présents dans shifts (réinjectés avant les passes), pour que les plafonds DURS
   // (gardes WE/mois, gardes/semaine, nuits) et l'équilibrage de charge en tiennent compte dès le
@@ -16977,7 +16997,7 @@ function generateAlgo(ptargets, genYear, genMonth){
     const _hPost=getPost('pm16');
     if(_hPost){
       const _hSlots=[];
-      for(let d=1;d<=d2;d++){
+      for(let d=1;d<=d2;d++){ _engGapSync();
         const dk=dkey(gy,gm,d);
         if(!shifts[dk]) shifts[dk]={};
         if(isWE(dk)) continue;
@@ -17108,7 +17128,7 @@ function generateAlgo(ptargets, genYear, genMonth){
     const _wPids=['we-coord','we-smur-sat','we-smur-sun','we-satmu'];
     const _wAddDays=(dk,n)=>{const dt=new Date(dk+'T12:00:00');dt.setDate(dt.getDate()+n);return dt.toISOString().slice(0,10);};
     const _wSlots=[];
-    for(let d=1;d<=d2;d++){
+    for(let d=1;d<=d2;d++){ _engGapSync();
       const dk=dkey(gy,gm,d);
       if(!shifts[dk]) shifts[dk]={};
       _wPids.forEach(pid=>{
@@ -17272,7 +17292,7 @@ function generateAlgo(ptargets, genYear, genMonth){
       };
       const _cNightPids=['coord-n','smur-n','satmu-n'];
       const _cWeekdays=[];
-      for(let d=1;d<=d2;d++){
+      for(let d=1;d<=d2;d++){ _engGapSync();
         const dk=dkey(gy,gm,d);
         if(!shifts[dk]) shifts[dk]={};
         if(!isWE(dk)) _cWeekdays.push(dk);
@@ -17427,7 +17447,7 @@ function generateAlgo(ptargets, genYear, genMonth){
   // ── FIN PASSE PAIRES CHAÎNÉES HORIZONTALE ──────────────────────────────────
   dblWatch('paires-horizontal',gy,gm);
 
-  for(let d=1;d<=d2;d++){
+  for(let d=1;d<=d2;d++){ _engGapSync();
     const dk=dkey(gy,gm,d);
     if(!shifts[dk]) shifts[dk]={};
 
@@ -20287,7 +20307,7 @@ function generateAlgo(ptargets, genYear, genMonth){
   const adminPost = getPost('admin');
   const degesves = docs.find(d=>d.circuitCountsAsAdmin);
   if(adminPost && degesves){
-    for(let d=1;d<=d2;d++){
+    for(let d=1;d<=d2;d++){ _engGapSync();
       const dk=dkey(gy,gm,d);
       if(isWE(dk)) continue;  // Admin = jours de semaine uniquement
       if(!postActiveOnDay(adminPost,dk)) continue;
@@ -20491,7 +20511,7 @@ function generateAlgo(ptargets, genYear, genMonth){
     return canChain?0:1;
   }
 
-  for(let d=1;d<=d2;d++){
+  for(let d=1;d<=d2;d++){ _engGapSync();
     const dk=dkey(gy,gm,d);
     if(isWE(dk)) continue;
     const repos=computeRepos(dk);
@@ -20716,7 +20736,7 @@ function generateAlgo(ptargets, genYear, genMonth){
   const btViolations=[];
 
   // BT1 — Week-end
-  for(let d=1;d<=d2;d++){
+  for(let d=1;d<=d2;d++){ _engGapSync();
     const dk=dkey(gy,gm,d);
     if(!isWE(dk)) continue;
     const repos=computeRepos(dk);
@@ -21013,7 +21033,7 @@ function generateAlgo(ptargets, genYear, genMonth){
   // BT2 — Dernier recours : d'abord réparation locale (réassigner la garde de la
   // veille à quelqu'un d'autre) ; si aucune réparation possible, le poste reste
   // vide (alerte "non couvert" déjà existante) plutôt que de violer le repos.
-  for(let d=1;d<=d2;d++){
+  for(let d=1;d<=d2;d++){ _engGapSync();
     const dk=dkey(gy,gm,d);
     const repos=computeRepos(dk);
     for(const tgtPid of IMPERATIVE_JOUR){
@@ -21082,7 +21102,7 @@ function generateAlgo(ptargets, genYear, genMonth){
       return t+(docDoublPerPost[docId]?docDoublPerPost[docId][pid]||0:0);
     };
 
-    for(let d=1;d<=d2;d++){
+    for(let d=1;d<=d2;d++){ _engGapSync();
       const dk=dkey(gy,gm,d);
       if(isWE(dk)) continue;
       if(!shifts[dk]['pm14']) continue; // prérequis inchangé
@@ -21337,6 +21357,44 @@ function docMonthTarget(doc,y,m,ctx){
   return Math.max(0,Math.round((qTarget-doneInQ)*days[m]/daysLeft));
 }
 
+// [2026-11-14 HEURE_ENCHAINEE] Un médecin qui enchaîne un poste de jour et une garde de nuit le même jour travaille aussi l'intervalle
+// qui les sépare : poste B (ou A, C, D, COORD, U3, admin…) finissant à 18 h puis SMUR-N commençant à 19 h → l'heure 18 h–19 h compte
+// dans ses heures. Seul un écart d'au plus 1 h est comblé (COORD-N et SATMU-N commencent à 18 h : écart nul). Une fois par garde de nuit.
+function chainGapHours(dk,docId){
+  const day=shifts[dk]; if(!day||docId==null) return 0;
+  const toMin=t=>{ const a=String(t||'').split(':').map(Number); return (a[0]||0)*60+(a[1]||0); };
+  const mine=[];
+  for(const [pid,did] of Object.entries(day)){
+    if(!did) continue;
+    const sh=sharedOn(dk,pid);
+    let part=null;                                               // heures de ce médecin sur ce poste (null = poste entier)
+    if(did===docId) part=sh?(+sh.h1||0):null;
+    else if(sh&&sh.docId2===docId) part=(+sh.h2||0);
+    else continue;
+    if(part!==null&&part<=0) continue;                           // présence à 0 h : rien à compter
+    const p=getPost(pid); if(p&&!(p.noHoursWE&&isWE(dk))) mine.push(p);
+  }
+  if(mine.length<2) return 0;
+  let extra=0;
+  mine.filter(p=>p.overnight).forEach(n=>{
+    const sN=toMin(postStartFor(n,dk)); let best=null;
+    mine.forEach(d=>{
+      if(d===n||d.overnight) return;
+      const eD=toMin(postEndFor(d,dk)), sD=toMin(postStartFor(d,dk));
+      if(eD<=sD) return;                                         // poste de jour uniquement
+      const gap=sN-eD; if(gap>0&&gap<=60&&(best===null||gap<best)) best=gap;
+    });
+    if(best) extra+=best/60;
+  });
+  return extra;
+}
+function _chainGapAdd(res,dk){
+  const day=shifts[dk]; if(!day) return;
+  const ids=new Set();
+  Object.entries(day).forEach(([pid,did])=>{ if(did) ids.add(did); const sh=sharedOn(dk,pid); if(sh&&sh.docId2!=null) ids.add(sh.docId2); });
+  ids.forEach(id=>{ if(res[id]!==undefined) res[id]+=chainGapHours(dk,id); });
+}
+
 // Version sans congés — pour les totaux d'affichage (heures réellement prestées)
 function computeHoursForMonthWorked(y,m){
   const res={};
@@ -21352,6 +21410,7 @@ function computeHoursForMonthWorked(y,m){
       if(res[docId]!==undefined) res[docId]+=_sh?(+_sh.h1||0):postHours(p,dk);
       if(_sh&&res[_sh.docId2]!==undefined) res[_sh.docId2]+=(+_sh.h2||0);
     }
+    _chainGapAdd(res,dk); // [2026-11-14 HEURE_ENCHAINEE] 18 h–19 h enchaînées avec SMUR-N
     (exceptionalShifts[dk]||[]).forEach(ex=>{
       if(ex.docId&&res[ex.docId]!==undefined&&ex.hours) res[ex.docId]+=ex.hours;
     });
@@ -21375,6 +21434,7 @@ function computeHoursForMonth(y,m){
       if(res[docId]!==undefined) res[docId]+=_sh?(+_sh.h1||0):postHours(p);
       if(_sh&&res[_sh.docId2]!==undefined) res[_sh.docId2]+=(+_sh.h2||0);
     }
+    _chainGapAdd(res,dk); // [2026-11-14 HEURE_ENCHAINEE] 18 h–19 h enchaînées avec SMUR-N
     // Ajouter les heures des postes exceptionnels
     (exceptionalShifts[dk]||[]).forEach(ex=>{
       if(ex.docId&&res[ex.docId]!==undefined&&ex.hours) res[ex.docId]+=ex.hours;
