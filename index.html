@@ -8878,6 +8878,7 @@ var _adminUnlocked = false;
 function getDesiderataEmail(){
   return localStorage.getItem(ADMIN_EMAIL_KEY) || '';
 }
+/* @@JLX-DEBUT gestionnaire_js/base_config.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 // [2026-09-11] Valeurs par défaut (projet julandrex-citadelle, clé anon publique — la même
 // que celle du viewer) : un poste vierge se connecte sans saisie manuelle. Une valeur
 // saisie dans le panneau Admin reste prioritaire.
@@ -8886,6 +8887,7 @@ const SB_DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmF
 function getSupabaseConfig(){
   return {url:localStorage.getItem(ADMIN_SB_URL_KEY)||SB_DEFAULT_URL,key:localStorage.getItem(ADMIN_SB_KEY_KEY)||SB_DEFAULT_KEY};
 }
+/* @@JLX-FIN gestionnaire_js/base_config.js */
 
 function openAdminPanel(){
   _adminUnlocked = false;
@@ -24655,6 +24657,7 @@ function _exTitName(r){
   return d?(d.firstname+' '+d.lastname):'ID '+r.target_doctor_id;
 }
 
+/* @@JLX-DEBUT gestionnaire_js/base_client.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 // [2026-09-11] Un SEUL client : les 3 resyncs du démarrage appelaient getSbClient en même
 // temps et en créaient chacune un — sans conséquence en anon, mais avec Supabase Auth
 // plusieurs clients se disputent la même session (rafraîchissement du jeton).
@@ -24684,6 +24687,7 @@ async function getSbClient(){
   }
   return _sbClientPromise;
 }
+/* @@JLX-FIN gestionnaire_js/base_client.js */
 
 /* ══════════════════════════════════════════
    ACCÈS GESTIONNAIRE — Supabase Auth (2026-09-11)
