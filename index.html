@@ -6608,7 +6608,13 @@ function repIsDoublU(e){ return /^doublure unit/i.test((e&&e.label)||''); }
 function repChefOn(doc,dk){ const c=doc&&SUP_CHEFS.find(c=>c.ln===String(doc.lastname||'').toUpperCase()); return !!c&&(!c.from||dk>=c.from)&&(!c.to||dk<=c.to); }
 function repName(id){ const d=docs.find(x=>x.id===id); if(!d) return '?';
   return _iniLast(d).toLowerCase().replace(/(^|[\s-])(\S)/g,(a,b,c)=>b+c.toUpperCase()); }
-function repEsc(t){ return String(t==null?'':t).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* @@JLX-DEBUT gestionnaire_js/texte.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
+// Échappement d'un texte avant de le placer dans la page (HTML) : & < > " ' deviennent des entités ; un texte absent (null, undefined) devient vide.
+// [2026-11-22 lot 6] Une seule fonction au lieu de 4 copies presque identiques : repEsc, escHtml (affichait « null » pour un texte absent),
+// _authEsc (laissait passer l'apostrophe) et _clEsc. Ces 4 noms restent utilisables : ils appellent jlxEsc.
+function jlxEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+/* @@JLX-FIN gestionnaire_js/texte.js */
+function repEsc(t){ return jlxEsc(t); } // [2026-11-22 LOT6-TEXTE] voir gestionnaire_js/texte.js
 // Postes ni obligatoires ni facultatifs dans la config mais que la vue n'affiche pas en rouge (couverture non systématique)
 const REP_SOFT=['admin','circuit','u3-5'];
 const REP_COLS={
@@ -22077,7 +22083,7 @@ var _dgEditId=null;
 // [FIX] Échappement HTML minimal — évite qu'un nom de grade contenant des guillemets/
 // chevrons casse l'attribut value="..." ou injecte du markup dans le modal groupe.
 function escHtml(s){
-  return String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  return jlxEsc(s); // [2026-11-22 LOT6-TEXTE] voir gestionnaire_js/texte.js (avant : « null » affiché pour un texte absent)
 }
 function openDocGroupModal(id){
   _dgEditId=id||null;
@@ -24683,7 +24689,7 @@ async function getSbClient(){
 ══════════════════════════════════════════ */
 var _authMember=null, _authEmail=null;
 var AUTH_CARD_CSS='background:var(--bg2,#14233a);color:var(--t1,#e6edf6);border:1px solid var(--line2,#2a3b55);border-radius:14px;padding:26px 24px;width:100%;max-width:380px;box-shadow:0 10px 40px rgba(0,0,0,.5);font-size:13px;';
-function _authEsc(s){ return String(s==null?'':s).replace(/[&<>"]/g,function(c){return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];}); }
+function _authEsc(s){ return jlxEsc(s); } // [2026-11-22 LOT6-TEXTE] voir gestionnaire_js/texte.js (avant : apostrophe non transformée)
 function _authHospitalName(){ if(_jlxModeFiches()) return _jlxHospName(); return (CLIENT_CONFIG&&CLIENT_CONFIG.hospital&&CLIENT_CONFIG.hospital.name)||currentHospitalId; } // [2026-10-27 lot 5]
 // → {status:'ok'|'nosession'|'revoked'|'unknown', email, role, message}
 async function authCheckAccess(){
@@ -30286,7 +30292,7 @@ async function factuInvSend(){
    le revérifient côté serveur). Voir commandes_20261104/. */
 var _cl = { rows: [], busy: false, err: '' };
 var CL_ETAPES = { a_envoyer: ['Lien à envoyer', '#7f8ea3'], a_signer: ['À signer', '#e0a43b'], signe: ['Signé, à valider', '#d9822b'], valide: ['Validé', '#4aa3df'], acces_envoye: ['Accès envoyé', '#3fae6a'] };
-function _clEsc(s){ return String(s==null?'':s).replace(/[&<>"']/g,function(c){ return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]; }); }
+function _clEsc(s){ return jlxEsc(s); } // [2026-11-22 LOT6-TEXTE] voir gestionnaire_js/texte.js
 function _clDate(d){ return d ? new Date(d).toLocaleDateString('fr-BE') : ''; }
 async function _clVisibilite(essai){
   try{
