@@ -23395,6 +23395,7 @@ document.querySelectorAll('.modal-bg').forEach(m=>{ m.addEventListener('click',e
 /* ══════════════════════════════════════════
    BOOT
 ══════════════════════════════════════════ */
+/* @@JLX-DEBUT gestionnaire_js/onglet_export_pdf.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 /* ══════════════════════════════════════════
    PDF EXPORT
 ══════════════════════════════════════════ */
@@ -23797,6 +23798,7 @@ ${myCongs.length?`<table><thead><tr><th>Type</th><th>Période</th><th></th><th>N
   if(!w||w.closed){alert('⚠ Popup bloqué. Autorisez les popups pour ce site.');return;}
   if(w){w.document.open();w.document.write(html);w.document.close();}
 }
+/* @@JLX-FIN gestionnaire_js/onglet_export_pdf.js */
 
 /* ══════════════════════════════════════════
    PUBLIER VERS SUPABASE (VIEWER)
@@ -24757,6 +24759,7 @@ async function getSbClient(){
 }
 /* @@JLX-FIN gestionnaire_js/base_client.js */
 
+/* @@JLX-DEBUT gestionnaire_js/onglet_connexion.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 /* ══════════════════════════════════════════
    ACCÈS GESTIONNAIRE — Supabase Auth (2026-09-11)
    Remplace le secret admin statique embarqué dans le fichier : l'écriture n'est autorisée
@@ -25184,6 +25187,7 @@ async function authBoot(){
     setInterval(function(){ authApplyAccess(false); }, 10*60*1000);
   }
 }
+/* @@JLX-FIN gestionnaire_js/onglet_connexion.js */
 
 /* ══════════════════════════════════════════
    NOTIFICATIONS EMAIL
@@ -28816,6 +28820,7 @@ if('serviceWorker' in navigator){
 </script>
 <!-- ═══ DÉBUT MODULE REMPLACEMENT (source : remplacement-absent.js) ═══ -->
 <script>
+/* @@JLX-DEBUT gestionnaire_js/onglet_remplacement.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 /* ══════════════════════════════════════════
    REMPLACER UN MÉDECIN ABSENT  [2026-09-23]
    Déclare une absence, libère les postes du médecin sur la période et propose pour chacun
@@ -29328,6 +29333,7 @@ setTimeout(function(){
     if(p) showToast('🔄 Remplacement en cours ('+_rplName(p.docId)+') : Actions → Remplacer un médecin absent pour le terminer ou l\'annuler.',7000);
   }catch(e){}
 },4000);
+/* @@JLX-FIN gestionnaire_js/onglet_remplacement.js */
 </script>
 <!-- ═══ FIN MODULE REMPLACEMENT ═══ -->
 <script>
@@ -30184,6 +30190,7 @@ async function factuRecipDelete(id){
   if(r.error) alert('⚠️ '+r.error.message);
   await factuLoad(); renderFactu();
 }
+/* @@JLX-DEBUT gestionnaire_js/onglet_facturation.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 /* [2026-11-02] FACTURES — le chef de service établit les factures de chaque médecin à partir du relevé validé.
    Paramètres (client = l'hôpital, taux par grade et par catégorie) : billing_settings ; identité de chaque médecin :
    billing_doctor_profiles ; factures : billing_invoices, créées et annulées (note de crédit) par les fonctions SQL
@@ -30363,14 +30370,18 @@ async function factuInvSend(){
   }catch(e){ alert('⚠️ Envoi impossible : '+(e.message||e)); }
   _fx.busy=false; renderFactu();
 }
+/* @@JLX-FIN gestionnaire_js/onglet_facturation.js */
 </script>
 <script>
+/* @@JLX-DEBUT gestionnaire_js/onglet_clients.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 /* [2026-11-04] Onglet « Clients » : hôpitaux, référents, commandes, convention signée, validation et envoi de l'accès.
    Réservé à l'administrateur de la plateforme connecté avec la double authentification (admin_clients / ?action=acces
    le revérifient côté serveur). Voir commandes_20261104/. */
 var _cl = { rows: [], busy: false, err: '' };
 var CL_ETAPES = { a_envoyer: ['Lien à envoyer', '#7f8ea3'], a_signer: ['À signer', '#e0a43b'], signe: ['Signé, à valider', '#d9822b'], valide: ['Validé', '#4aa3df'], acces_envoye: ['Accès envoyé', '#3fae6a'] };
 function _clEsc(s){ return jlxEsc(s); } // [2026-11-22 LOT6-TEXTE] voir gestionnaire_js/texte.js
+// [2026-11-22 LOT6-CLIENTS] Les boutons reçoivent la référence (ou le numéro de facture) par un attribut data-…, lu par this.dataset :
+// un texte n'est plus jamais placé dans le code d'un bouton (onclick="f('…')"), où l'échappement prévu pour un texte ne suffit pas.
 function _clDate(d){ return d ? new Date(d).toLocaleDateString('fr-BE') : ''; }
 async function _clVisibilite(essai){
   try{
@@ -30416,11 +30427,11 @@ function renderClients(){
       if(c.domaine_email_ok===true) ctl+='<span style="color:#3fae6a;">✓ e-mail de l\'organisation</span><br>'; else if(c.domaine_email_ok===false) ctl+='<span style="color:#e0a43b;">⚠️ e-mail personnel</span><br>';
       if(c.bon_commande) ctl+='Bon de commande '+_clEsc(c.bon_commande);
       var act='';
-      if(c.ref && (c.etape_accueil==='signe'||c.etape_accueil==='valide')) act='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\')">Valider et envoyer l\'accès</button>';
-      else if(c.etape_accueil==='acces_envoye') act='<button class="tb-ghost tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsValider(\''+_clEsc(c.ref)+'\',true)">Renvoyer l\'accès</button>';
+      if(c.ref && (c.etape_accueil==='signe'||c.etape_accueil==='valide')) act='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" data-ref="'+_clEsc(c.ref)+'" onclick="clientsValider(this.dataset.ref)">Valider et envoyer l\'accès</button>';
+      else if(c.etape_accueil==='acces_envoye') act='<button class="tb-ghost tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" data-ref="'+_clEsc(c.ref)+'" onclick="clientsValider(this.dataset.ref,true)">Renvoyer l\'accès</button>';
       // Commande sur facture : la facture n'est jamais émise automatiquement (pas de relais de spam), c'est ce bouton.
       if(c.ref && c.mode==='facture' && c.commande_statut==='recue' && !(_cl.factures||[]).some(function(f){ return f.ref===c.ref && f.type==='facture' && !f.note_credit_numero; }))
-        act+=(act?'<br>':'')+'<button class="tb-primary tb-btn" style="margin-top:4px;padding:6px 12px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);" onclick="clientsFacturer(\''+_clEsc(c.ref)+'\')">💶 Émettre la facture</button>'; // [2026-11-07] bouton plein, bien visible
+        act+=(act?'<br>':'')+'<button class="tb-primary tb-btn" style="margin-top:4px;padding:6px 12px;font-size:12px;font-weight:700;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.25);" data-ref="'+_clEsc(c.ref)+'" onclick="clientsFacturer(this.dataset.ref)">💶 Émettre la facture</button>'; // [2026-11-07] bouton plein, bien visible
       var hop=c.hospital_id?_clEsc(c.hopital)+'<br><span style="color:var(--t3,#7f8ea3);">'+_clEsc(c.hospital_id)+' · '+(c.statut_hopital==='active'?'ouvert':'fermé')+'</span>':_clEsc(c.hopital)+'<br><span style="color:#e0a43b;">hôpital pas encore créé</span>';
       h+='<tr style="vertical-align:top;">'+[hop,refs,cmd,conv,sig,ctl,act].map(function(x){ return '<td style="padding:8px;border-bottom:1px solid var(--line2,#2a3b55);">'+x+'</td>'; }).join('')+'</tr>';
     });
@@ -30456,8 +30467,8 @@ function _clFacturesHtml(){
     var env='<span style="display:inline-block;padding:2px 8px;border-radius:999px;background:'+en[1]+'22;color:'+en[1]+';font-weight:600;">'+en[0]+'</span>';
     var act='';
     if(!nc && !f.note_credit_numero){
-      if(!f.payee) act+='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsPaiementRecu(\''+_clEsc(f.numero)+'\')">Paiement reçu</button><br>';
-      act+='<button class="tb-ghost tb-btn" style="margin-top:4px;padding:5px 10px;font-size:12px;white-space:nowrap;" onclick="clientsNoteCredit(\''+_clEsc(f.numero)+'\','+(f.payee&&f.stripe_invoice_id?'true':'false')+')">Note de crédit</button>';
+      if(!f.payee) act+='<button class="tb-btn" style="padding:5px 10px;font-size:12px;white-space:nowrap;" data-num="'+_clEsc(f.numero)+'" onclick="clientsPaiementRecu(this.dataset.num)">Paiement reçu</button><br>';
+      act+='<button class="tb-ghost tb-btn" style="margin-top:4px;padding:5px 10px;font-size:12px;white-space:nowrap;" data-num="'+_clEsc(f.numero)+'" onclick="clientsNoteCredit(this.dataset.num,'+(f.payee&&f.stripe_invoice_id?'true':'false')+')">Note de crédit</button>';
     }
     h+='<tr style="vertical-align:top;">'+[num,cli,mt,pay,env,act].map(function(x){ return '<td style="padding:8px;border-bottom:1px solid var(--line2,#2a3b55);">'+x+'</td>'; }).join('')+'</tr>';
   });
@@ -30504,6 +30515,7 @@ async function clientsValider(ref,renvoi){
   }catch(e){ alert('⚠️ '+((e&&e.message)||e)); }
   openClients();
 }
+/* @@JLX-FIN gestionnaire_js/onglet_clients.js */
 </script>
 </body>
 </html>
