@@ -10556,6 +10556,7 @@ function showStaffingAlert(gaps){
   return true;
 }
 
+/* @@JLX-DEBUT gestionnaire_js/moteur_secours.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 // ── Garantie de remplissage les jours fériés ────────────────────────────────
 // Un jour férié, un poste impératif qui reste vide UNIQUEMENT à cause d'un quota
 // (mensuel/trimestriel/annuel — pas d'une contrainte dure comme congé/repos/espacement
@@ -10829,6 +10830,7 @@ function showReposViolationRescueAlert(result){
   document.body.appendChild(overlay);
   return true;
 }
+/* @@JLX-FIN gestionnaire_js/moteur_secours.js */
 
 // ── PASSE RÉÉQUILIBRAGE FINAL (équité gardes WE + pm16) ─────────────────────
 // [2026-07-17] Mécanise les corrections manuelles post-génération : toutes les
