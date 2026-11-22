@@ -4730,6 +4730,7 @@ function gardeQuotaMonth(doc, y, m){
 /* ══════════════════════════════════════════
    HELPERS
 ══════════════════════════════════════════ */
+/* @@JLX-DEBUT gestionnaire_js/dates.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 const pad = n => String(n).padStart(2,'0');
 const dkey = (y,m,d) => `${y}-${pad(m+1)}-${pad(d)}`;
 const dim = (y,m) => new Date(y,m+1,0).getDate();
@@ -4751,6 +4752,7 @@ function getBelgianHolidays(year){
   ]);
 }
 const _holCache={};
+/* @@JLX-FIN gestionnaire_js/dates.js */
 // Congés scolaires FWB 2026 (par plages de dates)
 function isCongesScolaires2026(dk){
   const periods=[
@@ -4830,6 +4832,7 @@ function assistantCongeWeeksTrimestre(docId, trimestre, year, excludeStart, excl
   return total;
 }
 
+/* @@JLX-DEBUT gestionnaire_js/jours.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 function isHoliday(dk){
   const y=parseInt(dk.slice(0,4));
   if(!_holCache[y]) _holCache[y]=getBelgianHolidays(y);
@@ -4841,6 +4844,7 @@ const isWE  = dk => { const d=dowOf(dk); return d===0||d===6||isHoliday(dk); };
 const isSat = dk => dowOf(dk)===6 || (isHoliday(dk) && dowOf(dk)!==0); // férié semaine → comme sam
 const isSun = dk => dowOf(dk)===0;
 const prevDK = dk => { const d=new Date(dk+'T12:00:00'); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); };
+/* @@JLX-FIN gestionnaire_js/jours.js */
 /* @@JLX-DEBUT gestionnaire_js/constantes.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 const DAYS   = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
