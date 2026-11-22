@@ -6791,6 +6791,7 @@ function repShowMenu(ev,html){
 function repSlotMenu(ev,dk,pid){
   const id=(shifts[dk]||{})[pid], post=getPost(pid)||{}, doc=docs.find(x=>x.id===id), lock=isShiftLocked(dk,pid);
   repShowMenu(ev,'<div class="h">'+repEsc(postFullFor(post,dk)||pid)+' · '+formatDate(dk)+' — '+repEsc(doc?doc.firstname+' '+doc.lastname:'?')+'</div>'
+    +(POURQUOI_ON?'<div onclick="hideRepMenu();openPourquoiModal(\''+dk+'\',\''+pid+'\')">🔍 Pourquoi ce médecin ici ?</div>':'') // [2026-11-22 LOT5-POURQUOI] accès depuis le menu de la case
     +'<div onclick="hideRepMenu();openPickModal(\''+dk+'\',\''+pid+'\')">🔁 Remplacer…</div>'
     +'<div onclick="hideRepMenu();toggleShiftLock(\''+dk+'\',\''+pid+'\',event)">'+(lock?'🔓 Déverrouiller':'🔒 Verrouiller')+'</div>'
     +(sharedOn(dk,pid)
@@ -6884,7 +6885,7 @@ function renderPlanning(){
           h+=`<td class="shift-cell filled${isWE(dk)?' we-col':''}" style="background:${post.color}1a;${locked?'box-shadow:inset 0 0 0 2px '+post.color+';':''}">
             <div class="chip" style="color:${post.color};" title="${doc.firstname} ${doc.lastname}${_postStartChanges(post,dk)?' — '+postFullFor(post,dk):''}${locked?' — 🔒 verrouillé (survit à la régénération)':''}">
               <button class="chip-lock${locked?' on':''}" onclick="toggleShiftLock('${dk}','${pid}',event)" title="${locked?'Déverrouiller ce poste':'Verrouiller : ce poste survivra à la régénération'}">${locked?'🔒':'🔓'}</button>
-              <span class="chip-ini" style="font-size:${doc.lastname.length<=5?10:doc.lastname.length<=7?9:doc.lastname.length<=9?8:7}px;">${doc.lastname.toUpperCase()}</span>
+              <span class="chip-ini" onclick="if(POURQUOI_ON)openPourquoiModal('${dk}','${pid}')" title="Pourquoi ce médecin ici ?" style="cursor:help;font-size:${doc.lastname.length<=5?10:doc.lastname.length<=7?9:doc.lastname.length<=9?8:7}px;">${doc.lastname.toUpperCase()}</span><!-- [2026-11-22 LOT5-POURQUOI] -->
               <button class="chip-del" onclick="removeShift('${dk}','${pid}',event)">✕</button>
             </div>
           </td>`;
@@ -8447,6 +8448,27 @@ function renderPourquoiCase(E){
   if(E.refuses.length) h+='<ul style="margin:4px 0 0 18px;padding:0;">'+E.refuses.map(function(g){ return '<li>⛔ <i>'+repEsc(g.motif)+'</i> : '+g.docs.slice(0,8).map(nm).join(', ')+(g.docs.length>8?' +'+(g.docs.length-8):'')+'</li>'; }).join('')+'</ul>';
   h+='</div></div></details>';
   return h;
+}
+// [2026-11-22 LOT5-POURQUOI] Fenêtre autonome, ouverte depuis le menu d'une case occupée ou le nom d'un médecin (vue postes)
+function openPourquoiModal(dk,pid){
+  if(!POURQUOI_ON) return;
+  const old=document.getElementById('pourquoi-overlay'); if(old) old.remove();
+  let E=null; try{ E=pourquoiCase(dk,pid); }catch(e){ console.warn('pourquoiCase :',e); E={ok:false,msg:'Explication impossible : '+((e&&e.message)||e)}; }
+  const post=getPost(pid)||{};
+  const ov=document.createElement('div'); ov.id='pourquoi-overlay';
+  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:9700;display:flex;align-items:center;justify-content:center;padding:16px;';
+  ov.innerHTML='<div style="background:var(--bg1);border:1px solid var(--line2);border-radius:14px;padding:18px 22px;max-width:640px;width:100%;max-height:90vh;overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.5);">'
+    +'<div style="font-size:15px;font-weight:800;margin-bottom:2px;">'+repEsc(postFullFor(post,dk)||pid)+'</div>'
+    +'<div style="font-size:12px;color:var(--t3);margin-bottom:10px;">'+repEsc(formatDate(dk))+'</div>'
+    +(E&&E.ok?renderPourquoiCase(E).replace('<details ','<details open '):'<div style="color:var(--t2);">'+repEsc((E&&E.msg)||'')+'</div>')
+    +'<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px;">'
+    +'<button id="pq-remplacer" style="background:var(--bg2);color:var(--t1);border:1px solid var(--line2);border-radius:8px;padding:8px 14px;cursor:pointer;">🔁 Remplacer…</button>'
+    +'<button id="pq-fermer" style="background:var(--accent);color:#fff;border:none;border-radius:8px;padding:8px 14px;font-weight:700;cursor:pointer;">Fermer</button></div></div>';
+  document.body.appendChild(ov);
+  const fermer=function(){ try{ ov.remove(); }catch(e){} };
+  ov.addEventListener('click',function(e){ if(e.target===ov) fermer(); });
+  document.getElementById('pq-fermer').onclick=fermer;
+  document.getElementById('pq-remplacer').onclick=function(){ fermer(); openPickModal(dk,pid); };
 }
 let pickState={dk:null,pid:null};
 function openPickModal(dk,pid){
