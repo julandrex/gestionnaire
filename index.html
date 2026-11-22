@@ -2621,6 +2621,7 @@ try{ document.addEventListener('DOMContentLoaded',function(){ try{ document.titl
 function _jlxHospName(){ try{ const n=sessionStorage.getItem('jlx_admin_hosp_name'); if(n&&_jlxModeFiches()) return n; }catch(e){} return _jlxModeFiches()?currentHospitalId:CLIENT_CONFIG.hospital.name; }
 const isCitadelle = () => currentHospitalId === 'citadelle';
 
+/* @@JLX-DEBUT gestionnaire_js/stockage.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 function getHospitals(){
   try{
     const h=localStorage.getItem('planningURG_hospitals');
@@ -2669,6 +2670,7 @@ const _SHARED_LS_BASES=['planningURG_indispos','planningURG_exceptional','planni
     };
   }catch(e){ console.warn('[shared] drapeau de modification locale indisponible :',e.message); }
 })();
+/* @@JLX-FIN gestionnaire_js/stockage.js */
 
 // [2026-10-27 lot 5] Liste des hôpitaux du compte connecté : admin_members (lecture de ses propres lignes) + noms du registre
 // hospitals (lisible seulement pour ses hôpitaux). Un hôpital « closed » (pas encore ouvert aux médecins, ex. Huy) reste
