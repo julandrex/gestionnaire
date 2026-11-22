@@ -7112,10 +7112,10 @@ function getAllConflicts(){
     const dk=dkey(cy,cm,d);
     const day=shifts[dk]||{};
     // Paires chaînées légitimes : pas de double affectation pour ces couples
-    const chainedPairs=[['coord','coord-n'],['b','smur-n'],['a','satmu-n'],
-      ['admin','coord-n'],['admin','smur-n'],['admin','satmu-n']];
+    // [2026-11-22 LOT6-PAIRES] Liste commune du moteur et du contrôle avant publication (LEGIT_COMBO_PAIRS, gestionnaire_js/paires.js).
+    // Avant : une copie à part, sans les doublures (doub-coord / doub-smur + smur-n) → « Double affectation » affichée à tort.
     function isChainedPair(pid1,pid2){
-      return chainedPairs.some(([p,q])=>(pid1===p&&pid2===q)||(pid1===q&&pid2===p));
+      return LEGIT_COMBO_PAIRS.has(pid1+','+pid2)||LEGIT_COMBO_PAIRS.has(pid2+','+pid1);
     }
     function isLegitDoublePair(docId, pid1, pid2){
       if(_jlxModeFiches()&&window.JLX_MOTEUR_GENERIQUE){ // [2026-10-27 lot 6]
