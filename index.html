@@ -15576,6 +15576,7 @@ function gardePrefSterilizedBy(doc, post, dk){
   });
 }
 
+/* @@JLX-DEBUT gestionnaire_js/moteur_generation.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 function generateAlgo(ptargets, genYear, genMonth){
   window._genAlgoCalled=(window._genAlgoCalled||0)+1;
   window._doubUDiag={isCitadelle:isCitadelle(),postFound:DOUBLU_IDS.filter(id=>!!getPost(id)).length,call:window._genAlgoCalled};
@@ -21180,6 +21181,7 @@ function generateAlgo(ptargets, genYear, genMonth){
   // ── FIN PASSE DOUBLURES DÉFICIT ─────────────────────────────────────────────
   dblWatch('doublures-deficit',gy,gm);
 }
+/* @@JLX-FIN gestionnaire_js/moteur_generation.js */
 
 
 /* ── Cible annuelle ajustée à la durée de contrat dans l'année ──
