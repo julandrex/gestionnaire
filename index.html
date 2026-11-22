@@ -4841,10 +4841,12 @@ const isWE  = dk => { const d=dowOf(dk); return d===0||d===6||isHoliday(dk); };
 const isSat = dk => dowOf(dk)===6 || (isHoliday(dk) && dowOf(dk)!==0); // férié semaine → comme sam
 const isSun = dk => dowOf(dk)===0;
 const prevDK = dk => { const d=new Date(dk+'T12:00:00'); d.setDate(d.getDate()-1); return d.toISOString().slice(0,10); };
+/* @@JLX-DEBUT gestionnaire_js/constantes.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 const MONTHS = ['Janvier','Février','Mars','Avril','Mai','Juin','Juillet','Août','Septembre','Octobre','Novembre','Décembre'];
 const DAYS   = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
 const TYPE_LABEL = {conge:'Congé',formation:'Formation',absent:'Absence prolongée',autre:'Autre',repos:'Repos souhaité',pref:'Préférence',unavail_post:'Indispo poste',cs:'Congé scientifique',indispo:'Indisponible (journée)'};
 const TYPE_COLOR = {conge:'#3b82f6',formation:'#a78bfa',absent:'#f87171',autre:'#94a3b8',repos:'#0ea5e9',pref:'#f59e0b',unavail_post:'#ef4444',cs:'#ec4899',indispo:'#dc2626'};
+/* @@JLX-FIN gestionnaire_js/constantes.js */
 
 function getPost(id){ return posts.find(p=>p.id===id)||null; }
 
