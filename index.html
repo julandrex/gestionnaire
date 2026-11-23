@@ -1623,12 +1623,7 @@ document.addEventListener('DOMContentLoaded',function(){
           <div class="frow"><label class="flbl">T4 (Oct–Déc)</label><input class="finput" id="admin-ddl-t4" type="date"></div>
         </div>
       </div>
-      <div style="margin-top:12px;">
-        <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:6px;">🌐 Viewer Supabase</div>
-        <div style="font-size:10px;color:var(--t3);margin-bottom:6px;">URL et clé anon de votre projet Supabase (supabase.com → Settings → API).</div>
-        <div class="frow"><label class="flbl">URL Supabase</label><input class="finput" id="admin-sb-url" type="url" placeholder="https://xxxx.supabase.co"></div>
-        <div class="frow"><label class="flbl">Clé anon (public)</label><input class="finput" id="admin-sb-key" type="text" placeholder="eyJhbGci..."></div>
-      </div>
+      <!-- [2026-11-23 P9-BASE-FIXE] Champs « URL Supabase / Clé anon » retirés : l'adresse de la base est fixe (audit M-9) -->
       <div style="margin-top:12px;">
         <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:6px;">⏱ Plafond d'heures annuelles</div>
         <div style="font-size:10px;color:var(--t3);margin-bottom:6px;">Nombre d'heures maximum que le générateur peut planifier au-delà de la cible annuelle d'un médecin. Ex : 200 h → un médecin ciblant 2 080 h ne pourra pas dépasser 2 280 h. Mettre 0 pour désactiver.</div>
@@ -8888,12 +8883,15 @@ function getDesiderataEmail(){
 }
 /* @@JLX-DEBUT gestionnaire_js/base_config.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
 // [2026-09-11] Valeurs par défaut (projet julandrex-citadelle, clé anon publique — la même
-// que celle du viewer) : un poste vierge se connecte sans saisie manuelle. Une valeur
-// saisie dans le panneau Admin reste prioritaire.
+// que celle du viewer) : un poste vierge se connecte sans saisie manuelle.
+// [2026-11-23 P9-BASE-FIXE] L'adresse et la clé ne sont plus modifiables sur un poste (audit M-9) : avant, une valeur saisie dans le
+// panneau Admin (planningURG_supabaseUrl / planningURG_supabaseKey) passait devant et pouvait diriger ce poste vers une autre base.
+// Une ancienne valeur restée dans le navigateur est effacée au chargement.
+try{ localStorage.removeItem('planningURG_supabaseUrl'); localStorage.removeItem('planningURG_supabaseKey'); }catch(e){}
 const SB_DEFAULT_URL = 'https://zzqbcjtrtisexyokezaq.supabase.co';
 const SB_DEFAULT_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inp6cWJjanRydGlzZXh5b2tlemFxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzUyMDg1MzgsImV4cCI6MjA5MDc4NDUzOH0.m8DBLJ1T3gOYuZL9sGUDmrTvUHAZ6tRAIfJYIVUzGIE';
 function getSupabaseConfig(){
-  return {url:localStorage.getItem(ADMIN_SB_URL_KEY)||SB_DEFAULT_URL,key:localStorage.getItem(ADMIN_SB_KEY_KEY)||SB_DEFAULT_KEY};
+  return {url:SB_DEFAULT_URL,key:SB_DEFAULT_KEY};
 }
 /* @@JLX-FIN gestionnaire_js/base_config.js */
 
@@ -9024,12 +9022,7 @@ function renderAdminRates(){
       if(r&&!r.error&&r.data&&r.data.email_gestionnaire&&emailEl.value===_emInit) emailEl.value=r.data.email_gestionnaire;
     }).catch(function(){});
   }
-  // Charger config Supabase
-  const cfg=getSupabaseConfig();
-  const sbUrlEl=document.getElementById('admin-sb-url');
-  const sbKeyEl=document.getElementById('admin-sb-key');
-  if(sbUrlEl) sbUrlEl.value=cfg.url;
-  if(sbKeyEl) sbKeyEl.value=cfg.key;
+  // [2026-11-23 P9-BASE-FIXE] plus de champs URL / clé de la base à charger (adresse fixe)
   // Charger les deadlines desiderata
   const ddl=JSON.parse(localStorage.getItem('planningURG_desiderata_deadlines')||'{}');
   ['t1','t2','t3','t4'].forEach(t=>{
@@ -9064,11 +9057,7 @@ function saveAdminRates(){
       showToast('📧 E-mail du gestionnaire enregistré sur le serveur : '+_em);
     }).catch(function(e){ showToast('⚠ E-mail du gestionnaire non enregistré sur le serveur : '+e.message); });
   }
-  // Sauvegarder config Supabase
-  const sbUrlEl=document.getElementById('admin-sb-url');
-  const sbKeyEl=document.getElementById('admin-sb-key');
-  if(sbUrlEl&&sbUrlEl.value.trim()) localStorage.setItem(ADMIN_SB_URL_KEY,sbUrlEl.value.trim());
-  if(sbKeyEl&&sbKeyEl.value.trim()) localStorage.setItem(ADMIN_SB_KEY_KEY,sbKeyEl.value.trim());
+  // [2026-11-23 P9-BASE-FIXE] l'adresse et la clé de la base ne sont plus enregistrées sur le poste (adresse fixe)
   // Sauvegarder les deadlines desiderata
   const ddl={};
   ['t1','t2','t3','t4'].forEach(t=>{
