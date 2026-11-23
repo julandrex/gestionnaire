@@ -25377,7 +25377,9 @@ async function loadExchanges(){
 var HXE_TYPES = { exchange: 'Échange', reprise: 'Reprise', swap: 'Échange croisé', donation: 'Don de poste' };
 var HXE_STATUTS = {
   open: 'En attente', accepted: 'Acceptée — à valider', pending_j1: 'Switch J+1 en attente', pending_switch: 'Switch J0 en attente',
-  held: 'En suspens', confirmed: 'Confirmée', cancelled: 'Annulée', archived: 'Archivée'
+  held: 'En suspens', confirmed: 'Confirmée', cancelled: 'Annulée', archived: 'Archivée',
+  // [2026-11-23] lignes de refus du gestionnaire (tirées du journal refusal_log de chaque demande, voir hxeRefus)
+  refus_gest: 'Refusée par le gestionnaire'
 };
 var HXE_ETATS = {
   ok: ['✅', 'Toujours dans le planning publié'],
@@ -25492,6 +25494,62 @@ function hxeVerifier(demandes, medecins, mois) {
   return res;
 }
 
+// ── Refus du gestionnaire ────────────────────────────────────────────────────────────────────────────────────────
+// Un refus du gestionnaire ne laisse pas toujours la demande « annulée » : elle repasse souvent « en attente », le
+// médecin qui avait accepté étant libéré. La trace est le journal refusal_log de la demande, entrées by = 'gestionnaire' :
+//   « Échange refusé — X libéré(e). Raison : <motif> »  (cancelExchangeWithReason ; le motif est celui de la notification)
+//   « Acceptation de X refusée par le gestionnaire — problème de faisabilité (…) »  (freeAcceptorFeasibility)
+//   switch J0 / J+1 annulé par le gestionnaire.
+// Avant ce journal (juin 2026), seul le motif restait : demande annulée avec une note du gestionnaire (reviewer_note).
+// Les refus des médecins sollicités (« X a refusé la demande ») ne sont pas repris.
+var HXE_REFUS = {
+  echange: 'Échange refusé par le gestionnaire', faisabilite: 'Acceptation refusée par le gestionnaire (faisabilité)',
+  switch: 'Switch J0 annulé par le gestionnaire', j1: 'Switch J+1 annulé par le gestionnaire', j1_all: 'Échange J0 + J+1 annulé par le gestionnaire',
+  ancien: 'Échange refusé par le gestionnaire'
+};
+
+function _hxeNorm(s) { return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/\s+/g, ' ').trim().toLowerCase(); }
+
+/** Refus du gestionnaire sur une demande, du plus ancien au plus récent :
+    [{ nature, at, refuseId (doctors.id du médecin dont l'acceptation est refusée, si retrouvé), refuseNom, raison }].
+    medecins : [{ id, firstname, lastname }] (le journal nomme le médecin libéré en clair). */
+function hxeRefus(r, medecins) {
+  var log = Array.isArray(r.refusal_log) ? r.refusal_log.filter(function (e) { return e && e.by === 'gestionnaire'; }) : [];
+  var parNom = function (nom) {
+    var n = _hxeNorm(nom); if (!n) return null;
+    var d = (medecins || []).find(function (x) { return _hxeNorm((x.firstname || '') + ' ' + (x.lastname || '')) === n; });
+    return d ? d.id : null;
+  };
+  var out = log.map(function (e) {
+    var det = String(e.detail || '');
+    var o = { at: e.at || null, refuseId: null, refuseNom: null, raison: null, nature: null };
+    var m = det.match(/^Échange refusé — (.+?) libéré\(e\)\. Raison : ([\s\S]*)$/), f = det.match(/^Acceptation de (.+?) refusée par le gestionnaire — ([\s\S]*)$/);
+    if (m) { o.nature = 'echange'; o.refuseNom = m[1] === 'Accepteur' ? null : m[1]; o.raison = m[2]; }
+    else if (f) { o.nature = 'faisabilite'; o.refuseNom = f[1]; o.raison = f[2]; }
+    else { o.nature = HXE_REFUS[e.type] ? e.type : 'echange'; o.raison = det || null; }
+    o.refuseId = parNom(o.refuseNom);
+    return o;
+  });
+  // Ancien refus (avant le journal) : demande annulée avec une note du gestionnaire, sans trace du gestionnaire au journal
+  if (r.status === 'cancelled' && r.reviewer_note && String(r.reviewer_note).trim() && !log.length) {
+    out.push({ at: r.cancelled_at || null, refuseId: r.acceptor_id != null ? r.acceptor_id : null, refuseNom: null, raison: String(r.reviewer_note), nature: 'ancien' });
+  }
+  return out.sort(function (a, b) { return String(a.at || '') < String(b.at || '') ? -1 : String(a.at || '') > String(b.at || '') ? 1 : 0; });
+}
+
+/** Lignes de l'historique : chaque demande, suivie de ses refus par le gestionnaire (une ligne par refus, statut refus_gest).
+    Une ligne de refus reprend les champs de sa demande (dates, postes, médecins) et porte le refus dans _refus. */
+function hxeLignes(demandes, medecins) {
+  var out = [];
+  (demandes || []).forEach(function (r) {
+    out.push(r);
+    hxeRefus(r, medecins).forEach(function (x, i) {
+      out.push(Object.assign({}, r, { id: r.id + '#refus' + i, _demandeId: r.id, status: 'refus_gest', _refus: x }));
+    });
+  });
+  return out;
+}
+
 /** Filtre les demandes. f = { medecin (doctors.id), du, au ('AAAA-MM-JJ'), champDate ('poste' | 'creation'),
     statuts: [..] (vide = tous), type ('' = tous), anomalies (seulement l'état ko) } ; verif = résultat de hxeVerifier. */
 function hxeFiltrer(demandes, f, verif) {
@@ -25499,11 +25557,14 @@ function hxeFiltrer(demandes, f, verif) {
   return (demandes || []).filter(function (r) {
     if (f.medecin != null && f.medecin !== '') {
       var m = String(f.medecin);
-      var ids = [r.proposer_id, r.acceptor_id, r.target_doctor_id].filter(function (x) { return x != null; }).map(String);
+      var ids = [r.proposer_id, r.acceptor_id, r.target_doctor_id].concat(r._refus ? [r._refus.refuseId] : [])
+        .filter(function (x) { return x != null; }).map(String);
       if (ids.indexOf(m) < 0) return false;
     }
     if (f.du || f.au) {
-      var dates = f.champDate === 'creation' ? [String(r.created_at || '').slice(0, 10)].filter(Boolean) : hxeDatesPoste(r);
+      // Ligne de refus + « date de la demande » : on prend la date du refus
+      var cree = r._refus && r._refus.at ? r._refus.at : r.created_at;
+      var dates = f.champDate === 'creation' ? [String(cree || '').slice(0, 10)].filter(Boolean) : hxeDatesPoste(r);
       if (!dates.some(function (d) { return (!f.du || d >= f.du) && (!f.au || d <= f.au); })) return false;
     }
     if (f.statuts && f.statuts.length && f.statuts.indexOf(r.status) < 0) return false;
@@ -25549,7 +25610,7 @@ async function loadExchHistorique(){
       if(qm.error) throw qm.error;
       (qm.data||[]).forEach(function(p){ var mp=p.year+'-'+('0'+(p.month+1)).slice(-2); if(besoin.indexOf(mp)>=0&&p.shifts) mois[mp]=p.shifts; });
     }
-    _hxe={dem:dem, docs:qd.data||[], verif:hxeVerifier(dem,qd.data||[],mois), charge:new Date()};
+    _hxe={dem:dem, docs:qd.data||[], lignes:hxeLignes(dem,qd.data||[]), verif:hxeVerifier(dem,qd.data||[],mois), charge:new Date()}; // [2026-11-23] lignes = demandes + leurs refus
     renderExchHistorique();
   }catch(e){
     box.innerHTML='<div style="color:var(--err);padding:20px;">Erreur de lecture de l\'historique : '+repEsc(e.message||e)+'</div>';
@@ -25586,7 +25647,7 @@ function renderExchHistorique(){
   var box=document.getElementById('exch-mgr-content');
   if(!box||!_hxe) return;
   var F=_hxeF, sel=function(a,b){ return a===b?' selected':''; };
-  var ids={}; _hxe.dem.forEach(function(r){ [r.proposer_id,r.acceptor_id,r.target_doctor_id].forEach(function(x){ if(x!=null) ids[x]=1; }); });
+  var ids={}; _hxe.lignes.forEach(function(r){ [r.proposer_id,r.acceptor_id,r.target_doctor_id].concat(r._refus?[r._refus.parId,r._refus.refuseId]:[]).forEach(function(x){ if(x!=null) ids[x]=1; }); });
   var meds=Object.keys(ids).map(function(id){ return {id:id,nom:_hxeNom(id)}; }).sort(function(a,b){ return a.nom.localeCompare(b.nom,'fr'); });
   var nKo=Object.keys(_hxe.verif).filter(function(k){ return _hxe.verif[k].etat==='ko'; }).length;
   var champ='font-size:12px;padding:4px 6px;border:1px solid var(--line2);border-radius:6px;background:var(--bg1);color:var(--t1);';
@@ -25613,15 +25674,17 @@ function renderExchHistorique(){
 function _hxeRenderTable(){
   var box=document.getElementById('hxe-table');
   if(!box||!_hxe) return;
-  var V=_hxe.verif, liste=hxeFiltrer(_hxe.dem,_hxeF,V);
+  var V=_hxe.verif, liste=hxeFiltrer(_hxe.lignes,_hxeF,V);
+  var nRefus=liste.filter(function(r){ return !!r._refus; }).length, nDem=liste.length-nRefus;
   var td='padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;';
   var th='padding:7px 8px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--t3);border-bottom:1px solid var(--line2);position:sticky;top:0;background:var(--bg1);';
   var COUL={ok:'var(--ok)',ko:'var(--err)',remplace:'var(--t2)',non_publie:'var(--t3)',inconnu:'var(--t3)',confirmed:'var(--ok)',cancelled:'var(--t3)',archived:'var(--t3)',open:'var(--warn)',accepted:'var(--accent)',pending_j1:'#ea580c',pending_switch:'#ea580c',held:'var(--t2)'};
-  var t='<div style="font-size:12px;color:var(--t3);margin-bottom:6px;">'+liste.length+' demande'+(liste.length>1?'s':'')+' affichée'+(liste.length>1?'s':'')+' sur '+_hxe.dem.length
+  var t='<div style="font-size:12px;color:var(--t3);margin-bottom:6px;">'+nDem+' demande'+(nDem>1?'s':'')+' affichée'+(nDem>1?'s':'')+' sur '+_hxe.dem.length
+    +(nRefus?' · '+nRefus+' refus affiché'+(nRefus>1?'s':''):'')
     +' · planning publié lu le '+_hxeT(_hxe.charge)+'</div>';
   if(!liste.length){ box.innerHTML=t+'<div style="color:var(--t3);padding:30px;text-align:center;">Aucune demande ne correspond aux filtres.</div>'; return; }
   t+='<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr>'
-    +['Demande le','Demandeur','Autre médecin','Date(s) et poste(s)','Type','Statut','Acceptée le','Confirmée le','Note du gestionnaire','Dans le planning ?'].map(function(x){ return '<th style="'+th+'">'+x+'</th>'; }).join('')
+    +['Demande le','Demandeur','Autre médecin','Date(s) et poste(s)','Type','Statut','Acceptée le','Confirmée le','Note / raison du refus','Dans le planning ?'].map(function(x){ return '<th style="'+th+'">'+x+'</th>'; }).join('')
     +'</tr></thead><tbody>';
   liste.forEach(function(r){
     var autre, role;
@@ -25629,11 +25692,16 @@ function _hxeRenderTable(){
     else if(r.target_doctor_id!=null){ autre=_hxeNom(r.target_doctor_id); role=r.type==='reprise'?'titulaire':'ciblé, sans réponse'; }
     else if(r.target_doctor_ids&&r.target_doctor_ids.length){ autre=r.target_doctor_ids.length+' médecins'; role='proposé à plusieurs, sans réponse'; }
     else { autre='—'; role='ouverte à tous'; }
+    var X=r._refus; // [2026-11-23] ligne de refus du gestionnaire : médecin dont l'acceptation est refusée, motif envoyé
+    if(X){
+      autre=X.refuseNom||(X.refuseId!=null?_hxeNom(X.refuseId):(r.acceptor_id!=null?_hxeNom(r.acceptor_id):'—'));
+      role=X.nature==='switch'||X.nature==='j1'||X.nature==='j1_all'?'switch annulé':'acceptation refusée';
+    }
     var quoi=_hxeJ(r.proposer_date)+' · '+repEsc(_hxePostes(r.proposer_post,r.type==='donation'?null:r.proposer_post2));
     if(r.type==='swap'&&r.counter_date) quoi+='<br><span style="color:var(--t3);">⇄ en retour</span> '+_hxeJ(r.counter_date)+' · '+repEsc(_hxePostes(r.counter_post,r.counter_post2));
     if(r.switch_proposer_post) quoi+='<br><span style="color:var(--t3);">switch J0 :</span> '+repEsc(_hxePostes(r.switch_proposer_post));
     if(r.j1_date) quoi+='<br><span style="color:var(--t3);">J+1</span> '+_hxeJ(r.j1_date)+' · '+repEsc(_hxePostes(r.j1_proposer_post))+(r.j1_acceptor_posts&&r.j1_acceptor_posts.length?' ⇄ '+repEsc(_hxePostes(r.j1_acceptor_posts.join(','))):'');
-    var notes=[r.reviewer_note,r.cancel_reason].filter(function(x,i,a){ return x&&String(x).trim()&&a.indexOf(x)===i; }).join(' — ');
+    var notes=X?(X.raison?'Raison : '+X.raison:''):[r.reviewer_note,r.cancel_reason].filter(function(x,i,a){ return x&&String(x).trim()&&a.indexOf(x)===i; }).join(' — ');
     var v=V[r.id], pl='<span style="color:var(--t3);">—</span>';
     if(v){
       var E=HXE_ETATS[v.etat]||HXE_ETATS.inconnu;
@@ -25648,15 +25716,17 @@ function _hxeRenderTable(){
       pl='<span title="'+repEsc(E[1]+'\n'+det.join('\n'))+'" style="font-weight:700;color:'+COUL[v.etat]+';white-space:nowrap;">'+E[0]+' '+E[1]+'</span>';
       if(v.etat==='ko') pl+='<div style="font-size:11px;color:var(--err);margin-top:2px;">'+det.filter(function(x,i){ return v.cases[i].etat==='ko'; }).map(repEsc).join('<br>')+'</div>';
     }
-    t+='<tr data-hxe="'+repEsc(r.id)+'"'+(v&&v.etat==='ko'?' style="background:rgba(239,68,68,.06);"':'')+'>'
-      +'<td style="'+td+'white-space:nowrap;">'+_hxeT(r.created_at)+'</td>'
+    var stCell=X?'<span style="color:var(--err);">'+repEsc(HXE_REFUS[X.nature]||HXE_STATUTS[r.status])+'</span><div style="font-size:10.5px;font-weight:400;color:var(--t3);">'+(X.at?'le '+_hxeT(X.at):(X.nature==='ancien'?'date inconnue (avant le journal des refus)':'date inconnue'))+'</div>'
+      :repEsc(HXE_STATUTS[r.status]||r.status)+(r.status==='archived'&&r.confirmed_at?'<div style="font-size:10.5px;font-weight:400;color:var(--t3);">après confirmation</div>':'');
+    t+='<tr data-hxe="'+repEsc(r.id)+'"'+(v&&v.etat==='ko'?' style="background:rgba(239,68,68,.06);"':X?' style="background:rgba(249,115,22,.05);"':'')+'>'
+      +'<td style="'+td+'white-space:nowrap;'+(X?'color:var(--t3);':'')+'">'+(X?'→ ':'')+_hxeT(r.created_at)+'</td>'
       +'<td style="'+td+'font-weight:600;">'+repEsc(_hxeNom(r.proposer_id))+'</td>'
       +'<td style="'+td+'">'+repEsc(autre)+'<div style="font-size:10.5px;color:var(--t3);">'+repEsc(role)+'</div></td>'
       +'<td style="'+td+'">'+quoi+'</td>'
       +'<td style="'+td+'white-space:nowrap;">'+repEsc(hxeTypeLabel(r))+'</td>'
-      +'<td style="'+td+'white-space:nowrap;font-weight:600;color:'+(COUL[r.status]||'var(--t2)')+';">'+repEsc(HXE_STATUTS[r.status]||r.status)+(r.status==='archived'&&r.confirmed_at?'<div style="font-size:10.5px;font-weight:400;color:var(--t3);">après confirmation</div>':'')+'</td>'
-      +'<td style="'+td+'white-space:nowrap;">'+_hxeT(r.accepted_at)+'</td>'
-      +'<td style="'+td+'white-space:nowrap;">'+_hxeT(r.confirmed_at)+'</td>'
+      +'<td style="'+td+'white-space:nowrap;font-weight:600;color:'+(COUL[r.status]||'var(--t2)')+';">'+stCell+'</td>'
+      +'<td style="'+td+'white-space:nowrap;">'+(X?'—':_hxeT(r.accepted_at))+'</td>'
+      +'<td style="'+td+'white-space:nowrap;">'+(X?'—':_hxeT(r.confirmed_at))+'</td>'
       +'<td style="'+td+'max-width:260px;color:var(--t2);">'+(notes?repEsc(notes):'<span style="color:var(--t3);">—</span>')+'</td>'
       +'<td style="'+td+'">'+pl+'</td>'
       +'</tr>';
