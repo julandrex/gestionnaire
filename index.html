@@ -7457,9 +7457,16 @@ function renderAlerts(){
     t+=posts.filter(p=>postActiveOnDay(p,dk)).length;
     c+=Object.keys(shifts[dk]||{}).filter(pid=>{const p=getPost(pid);return p&&!p.optional&&(shifts[dk][pid]);}).length;
   }
-  items.push({type:'ok',title:'Couverture',desc:`${c}/${t} postes (${Math.round(c/Math.max(t,1)*100)}%)`});
+  // [2026-11-23 P9-ALERTES-GRAVITE] Erreurs d'abord, puis avertissements, puis le reste (avant : tout mêlé, dans l'ordre des jours).
+  // Tri stable : dans chaque groupe, l'ordre des jours est gardé. Résumé « N erreurs · M avertissements » en tête, couverture en dernier.
+  const _rangGravite={err:0,warn:1,info:2};
+  items.sort(function(a,b){ return (a.type in _rangGravite?_rangGravite[a.type]:3)-(b.type in _rangGravite?_rangGravite[b.type]:3); });
+  const _nErr=items.filter(i=>i.type==='err').length, _nWarn=items.filter(i=>i.type==='warn').length+(progItems.length?1:0);
+  const _couverture={type:'ok',title:'Couverture',desc:`${c}/${t} postes (${Math.round(c/Math.max(t,1)*100)}%)`};
+  const _ligne=i=>`<div class="ap-item ap-${i.type}"><div class="ap-t">${i.title}</div><div class="ap-d">${i.desc}</div></div>`;
 
-  let html=items.map(i=>`<div class="ap-item ap-${i.type}"><div class="ap-t">${i.title}</div><div class="ap-d">${i.desc}</div></div>`).join('');
+  let html=(_nErr||_nWarn?'<div class="ap-resume" style="font-size:12px;color:var(--t2);margin:0 0 8px;">'+(_nErr?'<b style="color:var(--err,#ef4444);">'+_nErr+' erreur'+(_nErr>1?'s':'')+'</b>':'aucune erreur')+' · '+_nWarn+' avertissement'+(_nWarn>1?'s':'')+'</div>':'')
+    +items.map(_ligne).join('');
 
   // Bouton groupé pour les alertes de progression annuelle
   if(progItems.length>0){
@@ -7468,6 +7475,7 @@ function renderAlerts(){
       +`<div class="ap-d">${progItems.length} médecin${progItems.length>1?'s':''} concerné${progItems.length>1?'s':''} — cliquer pour détails</div>`
       +`</div>`;
   }
+  html+=_ligne(_couverture); // [2026-11-23 P9-ALERTES-GRAVITE] couverture en dernier, après les avertissements
 
   document.getElementById('ap-list').innerHTML=html;
 }
