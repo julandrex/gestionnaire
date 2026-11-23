@@ -1285,7 +1285,7 @@ document.addEventListener('DOMContentLoaded',function(){
     <div class="sb-item" onclick="gotoView('factu',this)" id="sb-factu" style="display:none"><span class="sb-icon2">💶</span>Facturation</div>
     <div class="sb-item" onclick="gotoView('clients',this)" id="sb-clients" style="display:none"><span class="sb-icon2">🤝</span>Clients</div><!-- [2026-11-04] Clients : administrateur plateforme + MFA -->
 
-    <div class="sb-item" onclick="openAdminPanel()" id="sb-admin"><span class="sb-icon2">🔐</span>Admin</div>
+    <div class="sb-item" onclick="openAdminPanel()" id="sb-admin" style="display:none"><span class="sb-icon2">🔐</span>Admin</div><!-- [2026-11-23 P9-ROLE-PROPRIETAIRE] affiché pour tout gestionnaire connecté -->
     <div class="sb-item" onclick="openAccountPanel()" id="sb-account"><span class="sb-icon2">👤</span>Mon compte</div>
     <div class="sb-item" onclick="toggleTheme()" id="sb-theme"><span class="sb-icon2" id="sb-theme-ico">🌙</span><span id="sb-theme-lbl">Thème sombre</span></div>
   </nav>
@@ -1592,8 +1592,8 @@ document.addEventListener('DOMContentLoaded',function(){
 <div class="modal-bg" id="admin-modal">
   <div class="modal" style="width:480px;">
     <h3>🔐 Configuration Administration</h3>
-    <div id="admin-lock-screen">
-      <div style="font-size:12px;color:var(--t2);margin-bottom:12px;">Saisissez le code admin pour accéder aux paramètres financiers.</div>
+    <div id="admin-lock-screen" style="display:none;"><!-- [2026-11-23 P9-ROLE-PROPRIETAIRE] plus de code PIN : ces réglages s'ouvrent pour tout gestionnaire connecté -->
+      <div style="font-size:12px;color:var(--t2);margin-bottom:12px;">Réglages ouverts à tout gestionnaire connecté.</div>
       <div class="frow"><label class="flbl">Code PIN</label><input class="finput" id="admin-pin-input" type="password" placeholder="••••" onkeydown="if(event.key==='Enter')checkAdminPin()"></div>
       <div class="mact">
         <button class="tb-ghost tb-btn" onclick="closeModal('admin-modal')">Annuler</button>
@@ -1636,16 +1636,9 @@ document.addEventListener('DOMContentLoaded',function(){
           </div>
         </div>
       </div>
-      <div style="margin-top:12px;">
-        <div style="font-size:11px;font-weight:600;color:var(--t2);margin-bottom:6px;">Modifier le code PIN</div>
-        <div class="frow2">
-          <div class="frow"><label class="flbl">Nouveau PIN</label><input class="finput" id="admin-new-pin" type="password" placeholder="6 chiffres min"></div>
-          <div class="frow"><label class="flbl">Confirmer</label><input class="finput" id="admin-confirm-pin" type="password" placeholder="Répéter"></div>
-        </div>
-        <button class="tb-ghost tb-btn" style="font-size:11px;margin-top:4px;" onclick="changeAdminPin()">Changer le PIN</button>
-      </div>
+      <!-- [2026-11-23 P9-ROLE-PROPRIETAIRE] « Modifier le code PIN » retiré : l'accès dépend du rôle du compte (propriétaire) -->
       <div class="mact">
-        <button class="tb-ghost tb-btn" onclick="closeModal('admin-modal');adminLock()">Verrouiller</button>
+        <button class="tb-ghost tb-btn" onclick="closeModal('admin-modal')">Fermer</button>
         <button class="tb-primary tb-btn" onclick="saveAdminRates()">💾 Enregistrer</button>
       </div>
     </div>
@@ -5380,7 +5373,7 @@ function init(){
   //  corrompait les vraies données importées (desiderata T3 2026, historique réel).]
   // Migrate hardcoded per-name rules → configurable rule engine
   migrateHardcodedToRules();
-  migrateAdminPin(); // sécurisation SHA-256 du PIN admin au premier démarrage
+  _jlxOublierCodeAdmin(); // [2026-11-23 P9-ROLE-PROPRIETAIRE] plus de code PIN (avant : migrateAdminPin posait le code de départ « 1234 » haché)
 
   render();
 
@@ -5930,12 +5923,10 @@ async function ppRefuseDesid(id,dk){
 
 function gotoView(id,el){
   // Logs protégé par le même PIN que l'Admin
-  if(id === 'regles' && window._adminUnlocked && !(typeof _authMember!=='undefined'&&_authMember&&_authMember.role==='owner')) return; // [2026-11-04] Règles système : propriétaire seulement
-  if((id === 'logs' || id === 'monito' || id === 'factu' || id === 'regles' || id === 'clients') && !window._adminUnlocked){ // [2026-11-04] Règles système : après le code Admin // [2026-10-06] Monito : même code que Logs ; [2026-11-02] Facturation aussi
-    window._pendingView = {id, el};
-    openAdminPanel();
-    return;
-  }
+  // [2026-11-23 P9-ROLE-PROPRIETAIRE] Vues réservées : selon le rôle du compte (avant : après le code PIN). Clients : administrateur de la plateforme.
+  if((id === 'logs' || id === 'monito' || id === 'factu' || id === 'regles') && !_jlxEstProprietaire()){ showToast('🔐 Réservé au compte propriétaire.'); return; }
+  if(id === 'clients' && !window._clPlateforme){ showToast('🔐 Réservé à l\'administrateur de la plateforme.'); return; }
+
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('on'));
   document.querySelectorAll('.sb-item').forEach(i=>i.classList.remove('on'));
   const v=document.getElementById('view-'+id);
@@ -8877,6 +8868,21 @@ function getMaxHoursPct(){
   return isNaN(v) ? 100 : v; // défaut 100 h de dépassement max
 }
 var _adminUnlocked = false;
+// [2026-11-23 P9-ROLE-PROPRIETAIRE] Le code PIN local est remplacé par le rôle du compte connecté (admin_members.role, vérifié par le serveur), sans code à taper :
+// - panneau Admin (e-mail du gestionnaire, dates limites des desiderata, plafond d'heures, taux horaires) : TOUT gestionnaire connecté
+//   (décision du Dr Sorce, 23/11/2026 : les référents des hôpitaux clients doivent garder ces réglages) ;
+// - menus Logs, Règles système, Monito et Facturation : compte PROPRIÉTAIRE seulement ;
+// - Clients : administrateur de la plateforme (vérifié par le serveur).
+function _jlxEstProprietaire(){ return typeof _authMember!=='undefined'&&!!_authMember&&_authMember.role==='owner'; }
+function _jlxEstConnecte(){ return typeof _authMember!=='undefined'&&!!_authMember; }
+function _jlxMenusReserves(){
+  const own=_jlxEstProprietaire();
+  _adminUnlocked=own;
+  const adm=document.getElementById('sb-admin'); if(adm) adm.style.display=_jlxEstConnecte()?'':'none';
+  ['sb-logs','sb-regles','sb-monito','sb-factu'].forEach(function(id){ const e=document.getElementById(id); if(e) e.style.display=own?'':'none'; });
+  try{ _clVisibilite(); }catch(e){}
+}
+function _jlxOublierCodeAdmin(){ try{ [ADMIN_PIN_KEY,ADMIN_LOCKOUT_KEY,ADMIN_FAIL_KEY].forEach(function(k){ localStorage.removeItem(k); }); }catch(e){} }
 
 function getDesiderataEmail(){
   return localStorage.getItem(ADMIN_EMAIL_KEY) || '';
@@ -8895,13 +8901,12 @@ function getSupabaseConfig(){
 }
 /* @@JLX-FIN gestionnaire_js/base_config.js */
 
-function openAdminPanel(){
-  _adminUnlocked = false;
-  document.getElementById('admin-lock-screen').style.display = '';
-  document.getElementById('admin-settings-screen').style.display = 'none';
-  document.getElementById('admin-pin-input').value = '';
+function openAdminPanel(){ // [2026-11-23 P9-ROLE-PROPRIETAIRE] plus de code PIN : tout gestionnaire connecté ouvre directement les réglages
+  if(!_jlxEstConnecte()){ showToast('🔐 Connectez-vous pour ouvrir les réglages.'); return; }
+  document.getElementById('admin-lock-screen').style.display = 'none';
+  document.getElementById('admin-settings-screen').style.display = '';
+  renderAdminRates();
   openModal('admin-modal');
-  setTimeout(()=>document.getElementById('admin-pin-input').focus(), 150);
 }
 
 async function checkAdminPin(){
@@ -24893,6 +24898,7 @@ async function authApplyAccess(afterLogin){
   const r=await authCheckAccess();
   if(r.status==='ok'){
     hideAuthGate();
+    try{ _jlxMenusReserves(); }catch(e){} // [2026-11-23 P9-ROLE-PROPRIETAIRE] menus réservés selon le rôle du compte (plus de code PIN)
     if(afterLogin){
       showToast('✅ Connecté : '+r.email);
       if(typeof planViewMode!=='undefined'){ planViewMode='rep'; try{ renderPlanning(); }catch(e){} }
@@ -25033,6 +25039,7 @@ function authMfaFromPanel(){ const p=document.getElementById('account-panel'); i
 async function authSignOut(){
   try{ const sb=await getSbClient(); if(sb) await sb.auth.signOut(); }catch(e){}
   _authMember=null; _authEmail=null;
+  try{ _jlxMenusReserves(); }catch(e){} // [2026-11-23 P9-ROLE-PROPRIETAIRE] déconnexion : menus réservés masqués
   try{ if(sessionStorage.getItem('jlx_admin_hosp')){ sessionStorage.removeItem('jlx_admin_hosp'); sessionStorage.removeItem('jlx_admin_hosp_name'); location.reload(); return; } }catch(e){} // [2026-10-27 lot 5]
   const p=document.getElementById('account-panel'); if(p) p.remove();
   showAuthGate('login');
@@ -30405,7 +30412,7 @@ async function _clVisibilite(essai){
     var s=await sb.auth.getSession(); if(!(s&&s.data&&s.data.session)){ if((essai||0)<20) setTimeout(function(){ _clVisibilite((essai||0)+1); }, 6000); return; }
     var r=await sb.rpc('admin_est_admin_plateforme'); var el=document.getElementById('sb-clients');
     window._clPlateforme = (r && r.data===true);
-    if(el) el.style.display = (window._clPlateforme && window._adminUnlocked) ? '' : 'none'; // [2026-11-07] Clients : seulement après le code Admin
+    if(el) el.style.display = window._clPlateforme ? '' : 'none'; // [2026-11-23 P9-ROLE-PROPRIETAIRE] Clients : administrateur de la plateforme (vérifié par le serveur), plus de code Admin
     if(!(r && r.data===true) && (essai||0)<20) setTimeout(function(){ _clVisibilite((essai||0)+1); }, 15000); // MFA validée plus tard
   }catch(e){ console.warn('[clients]', e); }
 }
