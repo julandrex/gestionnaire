@@ -27934,6 +27934,25 @@ async function validateDesiderata(id,forceStatus){
     if(_cfl.length&&!confirm('⚠️ Desiderata de '+r.doctor_name+' — '+_cfl.length+' demande'+(_cfl.length>1?'s':'')+' en conflit :\n\n'+_cfl.join('\n\n')
       +'\n\nOK = valider quand même (le générateur fera au mieux, les demandes impossibles seront signalées après génération)\nAnnuler = revenir à la fiche sans rien enregistrer')) return;
   }
+  // [2026-11-22 P8-CONGE-VALIDATION] Absence nouvellement acceptée (congé, formation, indisponible toute la journée) qui tombe sur des postes
+  // DÉJÀ attribués : prévenir avant d'enregistrer. Avant : rien ici, le conflit n'apparaissait qu'au contrôle avant publication (scénario S-5).
+  // Aucune règle changée et rien n'est retiré du planning : les postes restent au nom du médecin, à remplacer ensuite.
+  if(accItems.length>0&&localDocId!==null){
+    var _absPostes=[];
+    updated.forEach(function(item,ix){
+      if(item.status!=='accepted'||_stored(items[ix]||{})==='accepted') return;
+      if(!(item.type==='c'||item.type==='f'||(item.type==='r'&&desidItemFull(item)))) return;
+      var _d=new Date(item.date_start+'T12:00:00'), _fin=item.date_end||item.date_start;
+      for(var _n=0;_n<92;_n++){ var _dk=_d.toISOString().slice(0,10); if(_dk>_fin) break;
+        Object.keys(shifts[_dk]||{}).forEach(function(pid){ var _sh=sharedOn(_dk,pid);
+          if(shifts[_dk][pid]===localDocId||(_sh&&_sh.docId2===localDocId)){ var _p=getPost(pid); _absPostes.push(drFmtDate(_dk)+' : '+(_p?(postNameFor(_p,_dk)||_p.name||pid):pid)); } });
+        _d.setDate(_d.getDate()+1); }
+    });
+    if(_absPostes.length&&!confirm('⚠️ '+r.doctor_name+' a déjà '+_absPostes.length+' poste'+(_absPostes.length>1?'s':'')+' au planning pendant l\'absence que vous acceptez :\n\n   '
+      +_absPostes.slice(0,15).join('\n   ')+(_absPostes.length>15?'\n   … et '+(_absPostes.length-15)+' autre(s)':'')
+      +'\n\nCes postes restent à son nom : pensez à « Remplacer un médecin absent ». Le contrôle avant publication les signalera aussi.'
+      +'\n\nOK = accepter l\'absence quand même\nAnnuler = revenir à la fiche sans rien enregistrer')) return;
+  }
   if(accItems.length>0&&localDocId!==null){
     accItems.forEach(function(item){
       if(item.type==='c'){
