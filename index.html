@@ -1522,7 +1522,8 @@ document.addEventListener('DOMContentLoaded',function(){
       <span style="font-size:15px;font-weight:700;">🔄 Échanges de postes</span>
       <span id="exch-badge" style="display:none;background:var(--warn);color:#000;border-radius:10px;padding:1px 8px;font-size:11px;font-weight:700;"></span>
       <div style="flex:1;"></div>
-      <button class="tb-ghost tb-btn" onclick="loadExchanges()" style="font-size:11px;">↻ Actualiser</button>
+      <button class="tb-ghost tb-btn" id="exch-hist-btn" onclick="toggleExchHistorique()" title="Toutes les demandes d'échange, y compris confirmées, annulées et archivées" style="font-size:11px;">📜 Historique</button><!-- [2026-11-23 HISTORIQUE-ECHANGES] -->
+      <button class="tb-ghost tb-btn" onclick="exchActualiser()" style="font-size:11px;">↻ Actualiser</button>
     </div>
     <div id="exch-mgr-content" style="padding:16px 20px;overflow-y:auto;height:calc(100% - 56px);">
       <div class="ld" style="color:var(--t3);">Chargement...</div>
@@ -5941,7 +5942,7 @@ function gotoView(id,el){
   if(id==='gardes') renderGardes();
   if(id==='conges') renderConges();
   if(id==='direction') renderDirection();
-  if(id==='exchanges') loadExchanges();
+  if(id==='exchanges'){ _hxeQuitter(); loadExchanges(); } // [2026-11-23 HISTORIQUE-ECHANGES] l'onglet s'ouvre sur les demandes en cours
   if(id==='desiderata-mgr') loadDesiderata();
   if(id==='prefs-postes') renderPrefsPostes();
   if(id==='logs') loadLogs();
@@ -25358,6 +25359,310 @@ async function loadExchanges(){
   }catch(e){
     container.innerHTML = `<div style="color:var(--err);padding:20px;">Erreur : ${e.message}</div>`;
   }
+}
+
+/* @@JLX-DEBUT gestionnaire_js/historique_echanges.js — NE PAS MODIFIER ICI : modifier ce fichier puis lancer « node outils/assembler.js » (lot 6 de l'audit) */
+// [2026-11-23 HISTORIQUE-ECHANGES] Historique des échanges (onglet Échanges → « 📜 Historique ») : calculs sans affichage.
+// Lecture seule : rien n'est écrit en base. L'affichage (tableau, filtres) est dans le gestionnaire, juste après cette zone.
+//
+// « Dans le planning ? » : pour chaque demande confirmée, on calcule les cases que l'échange a écrites (mêmes règles que
+// applyExchange, applySwap, applyExchangeSwitch et applyExchangeJ0J1), puis on les compare au planning PUBLIÉ
+// (planning_months.shifts, qui note les médecins par leur local_id ; les demandes, par doctors.id).
+//   ok         : toutes les cases vérifiables tiennent encore
+//   ko         : au moins une case a changé de main, sans échange confirmé plus récent sur cette case → anomalie
+//   remplace   : chaque case a été reprise par un échange confirmé plus tard (pas une anomalie)
+//   non_publie : le mois n'est pas publié
+//   inconnu    : la demande ne dit pas assez pour vérifier (médecin introuvable, ancienne archive sans date de confirmation)
+
+var HXE_TYPES = { exchange: 'Échange', reprise: 'Reprise', swap: 'Échange croisé', donation: 'Don de poste' };
+var HXE_STATUTS = {
+  open: 'En attente', accepted: 'Acceptée — à valider', pending_j1: 'Switch J+1 en attente', pending_switch: 'Switch J0 en attente',
+  held: 'En suspens', confirmed: 'Confirmée', cancelled: 'Annulée', archived: 'Archivée'
+};
+var HXE_ETATS = {
+  ok: ['✅', 'Toujours dans le planning publié'],
+  ko: ['⚠', 'N\'est plus dans le planning publié'],
+  remplace: ['↪', 'Remplacé par un échange confirmé plus tard'],
+  non_publie: ['—', 'Mois non publié'],
+  inconnu: ['?', 'Vérification impossible']
+};
+
+/** Libellé du type, avec le switch éventuel. */
+function hxeTypeLabel(r) {
+  var t = HXE_TYPES[r.type] || r.type || '?';
+  if (r.switch_proposer_post) t += ' + switch J0';
+  if (r.j1_date) t += ' + switch J+1';
+  return t;
+}
+
+/** Une demande se vérifie si elle a été confirmée (une archive ne le dit que par sa date de confirmation). */
+function hxeVerifiable(r) {
+  return r.status === 'confirmed' || (r.status === 'archived' && !!r.confirmed_at);
+}
+
+/** Médecin qui cède / médecin qui reçoit le poste de la demande (doctors.id). Pour une reprise, le demandeur reçoit. */
+function hxeRoles(r) {
+  var autre = r.acceptor_id != null ? r.acceptor_id : r.target_doctor_id;
+  if (r.type === 'reprise') return { cede: autre, recoit: r.proposer_id };
+  return { cede: r.proposer_id, recoit: autre };
+}
+
+function _hxeListe(v) {
+  if (v == null || v === '') return [];
+  if (Array.isArray(v)) return v.filter(Boolean);
+  return String(v).split(',').map(function (x) { return x.trim(); }).filter(Boolean);
+}
+
+/** Cases écrites par une demande confirmée : [{ dk, pid, docId (doctors.id) }].
+    Non vérifié : au switch J+1, les postes de l'accepteur au J0 vont aussi au proposeur, mais la demande ne les enregistre pas. */
+function hxeCasesAttendues(r) {
+  var ro = hxeRoles(r), out = [];
+  var ajoute = function (dk, pids, docId) { if (!dk || docId == null) return; pids.forEach(function (pid) { out.push({ dk: dk, pid: pid, docId: docId }); }); };
+  var postes = r.type === 'donation' ? _hxeListe(r.proposer_post) : _hxeListe(r.proposer_post).concat(_hxeListe(r.proposer_post2));
+  ajoute(r.proposer_date, postes, ro.recoit);
+  if (r.type === 'swap') ajoute(r.counter_date, _hxeListe(r.counter_post).concat(_hxeListe(r.counter_post2)), ro.cede);
+  // Switch J0 : le proposeur reçoit les postes de l'accepteur du même jour (liste enregistrée au moment du switch)
+  if (r.switch_proposer_post) ajoute(r.proposer_date, _hxeListe(r.switch_proposer_post), r.proposer_id);
+  // Switch J+1 : le poste du proposeur va à l'accepteur, ceux de l'accepteur vont au proposeur
+  if (r.j1_date) {
+    ajoute(r.j1_date, _hxeListe(r.j1_proposer_post), r.acceptor_id);
+    ajoute(r.j1_date, _hxeListe(r.j1_acceptor_posts), r.proposer_id);
+  }
+  // Une même case ne compte qu'une fois (la dernière écriture l'emporte, comme dans applyExchange)
+  var vu = {};
+  for (var i = out.length - 1; i >= 0; i--) { var k = out[i].dk + '|' + out[i].pid; if (vu[k]) out.splice(i, 1); else vu[k] = 1; }
+  return out;
+}
+
+/** Famille de postes interchangeables (même règle que le moteur, qui traite tous les « u3-… » ensemble), sinon null. */
+function hxeFamille(pid) {
+  return /^u3-\d+$/.test(String(pid || '')) ? 'u3' : null;
+}
+
+/** Toutes les dates de poste d'une demande (pour le filtre par période). */
+function hxeDatesPoste(r) {
+  return [r.proposer_date, r.counter_date, r.j1_date].filter(Boolean);
+}
+
+/** Mois ('AAAA-MM') à charger pour vérifier les demandes. */
+function hxeMoisUtiles(demandes) {
+  var m = {};
+  (demandes || []).filter(hxeVerifiable).forEach(function (r) { hxeCasesAttendues(r).forEach(function (c) { m[c.dk.slice(0, 7)] = 1; }); });
+  return Object.keys(m).sort();
+}
+
+/** Vérifie les demandes confirmées contre le planning publié.
+    demandes : lignes de exchange_requests ; medecins : [{ id, local_id }] ;
+    mois : { 'AAAA-MM': shifts du mois publié } (mois absent = non publié).
+    Rend { id: { etat, cases: [{ dk, pid, docId, attendu (local_id), actuel (local_id ou null), etat, parId, ailleurs }] } }
+    (ailleurs : autre poste U3 du même jour où se trouve le médecin attendu). */
+function hxeVerifier(demandes, medecins, mois) {
+  var lid = {};
+  (medecins || []).forEach(function (d) { lid[d.id] = d.local_id != null ? d.local_id : d.id; });
+  var verif = (demandes || []).filter(hxeVerifiable).slice().sort(function (a, b) {
+    var ta = String(a.confirmed_at || a.accepted_at || a.created_at || ''), tb = String(b.confirmed_at || b.accepted_at || b.created_at || '');
+    return ta < tb ? -1 : ta > tb ? 1 : 0;
+  });
+  // Dernière demande confirmée qui a écrit chaque case
+  var derniere = {};
+  verif.forEach(function (r) { hxeCasesAttendues(r).forEach(function (c) { derniere[c.dk + '|' + c.pid] = r.id; }); });
+  var res = {};
+  verif.forEach(function (r) {
+    var cases = hxeCasesAttendues(r).map(function (c) {
+      var o = { dk: c.dk, pid: c.pid, docId: c.docId, attendu: lid[c.docId] != null ? lid[c.docId] : null, actuel: null, etat: 'inconnu', parId: null };
+      var sh = mois ? mois[c.dk.slice(0, 7)] : null;
+      if (o.attendu == null) return o;
+      if (!sh) { o.etat = 'non_publie'; return o; }
+      var cur = (sh[c.dk] || {})[c.pid];
+      o.actuel = cur == null ? null : cur;
+      var k = c.dk + '|' + c.pid;
+      if (derniere[k] !== r.id) { o.etat = 'remplace'; o.parId = derniere[k]; }
+      else if (cur != null && cur == o.attendu) o.etat = 'ok';
+      else {
+        // Postes interchangeables (U3-1 … U3-5) : le médecin attendu sur un autre U3 du même jour compte comme présent
+        var fam = hxeFamille(c.pid), autre = fam ? Object.keys(sh[c.dk] || {}).find(function (p) { return p !== c.pid && hxeFamille(p) === fam && sh[c.dk][p] == o.attendu; }) : null;
+        if (autre) { o.etat = 'ok'; o.ailleurs = autre; } else o.etat = 'ko';
+      }
+      return o;
+    });
+    var a = function (e) { return cases.some(function (c) { return c.etat === e; }); };
+    var etat = !cases.length ? 'inconnu' : a('ko') ? 'ko' : a('ok') ? 'ok' : a('remplace') ? 'remplace' : a('non_publie') ? 'non_publie' : 'inconnu';
+    res[r.id] = { etat: etat, cases: cases };
+  });
+  return res;
+}
+
+/** Filtre les demandes. f = { medecin (doctors.id), du, au ('AAAA-MM-JJ'), champDate ('poste' | 'creation'),
+    statuts: [..] (vide = tous), type ('' = tous), anomalies (seulement l'état ko) } ; verif = résultat de hxeVerifier. */
+function hxeFiltrer(demandes, f, verif) {
+  f = f || {};
+  return (demandes || []).filter(function (r) {
+    if (f.medecin != null && f.medecin !== '') {
+      var m = String(f.medecin);
+      var ids = [r.proposer_id, r.acceptor_id, r.target_doctor_id].filter(function (x) { return x != null; }).map(String);
+      if (ids.indexOf(m) < 0) return false;
+    }
+    if (f.du || f.au) {
+      var dates = f.champDate === 'creation' ? [String(r.created_at || '').slice(0, 10)].filter(Boolean) : hxeDatesPoste(r);
+      if (!dates.some(function (d) { return (!f.du || d >= f.du) && (!f.au || d <= f.au); })) return false;
+    }
+    if (f.statuts && f.statuts.length && f.statuts.indexOf(r.status) < 0) return false;
+    if (f.type) {
+      if (f.type === 'switch' ? !(r.switch_proposer_post || r.j1_date) : r.type !== f.type) return false;
+    }
+    if (f.anomalies && !(verif && verif[r.id] && verif[r.id].etat === 'ko')) return false;
+    return true;
+  });
+}
+/* @@JLX-FIN gestionnaire_js/historique_echanges.js */
+// [2026-11-23 HISTORIQUE-ECHANGES] Affichage de l'historique (lecture seule). Calculs : zone gestionnaire_js/historique_echanges.js ci-dessus.
+// Toutes les demandes de l'hôpital, tous statuts ; « Dans le planning ? » compare les échanges confirmés au planning PUBLIÉ.
+var _hxeOn=false, _hxe=null;
+var _hxeF={medecin:'',du:'',au:'',champDate:'poste',statuts:[],type:'',anomalies:false};
+function _hxeMajBouton(){
+  var b=document.getElementById('exch-hist-btn');
+  if(b){ b.textContent=_hxeOn?'← Demandes en cours':'📜 Historique'; b.title=_hxeOn?'Revenir aux demandes en cours':'Toutes les demandes d\'échange, y compris confirmées, annulées et archivées'; }
+}
+function toggleExchHistorique(){ _hxeOn=!_hxeOn; _hxeMajBouton(); if(_hxeOn) loadExchHistorique(); else loadExchanges(); }
+function exchActualiser(){ if(_hxeOn) loadExchHistorique(); else loadExchanges(); }
+function _hxeQuitter(){ if(!_hxeOn) return; _hxeOn=false; _hxeMajBouton(); }
+async function loadExchHistorique(){
+  var box=document.getElementById('exch-mgr-content');
+  if(!box) return;
+  box.innerHTML='<div style="color:var(--t3);padding:20px;">Chargement de l\'historique…</div>';
+  var sb=await getSbClient();
+  if(!sb){ box.innerHTML='<div style="color:var(--err);padding:20px;">⚠ Base non disponible : connectez-vous pour voir l\'historique.</div>'; return; }
+  try{
+    var H=currentHospitalId, dem=[], pas=1000;
+    for(var de=0;;de+=pas){
+      var q=await sb.from('exchange_requests').select('*').eq('hospital_id',H).order('created_at',{ascending:false}).range(de,de+pas-1);
+      if(q.error) throw q.error;
+      dem=dem.concat(q.data||[]);
+      if(!q.data||q.data.length<pas) break;
+    }
+    var qd=await sb.from('doctors').select('id,local_id,firstname,lastname').eq('hospital_id',H);
+    if(qd.error) throw qd.error;
+    var besoin=hxeMoisUtiles(dem), mois={};
+    if(besoin.length){
+      var ans=besoin.map(function(m){ return +m.slice(0,4); }).filter(function(y,i,a){ return a.indexOf(y)===i; });
+      var qm=await sb.from('planning_months').select('year,month,shifts,published_at').eq('hospital_id',H).in('year',ans);
+      if(qm.error) throw qm.error;
+      (qm.data||[]).forEach(function(p){ var mp=p.year+'-'+('0'+(p.month+1)).slice(-2); if(besoin.indexOf(mp)>=0&&p.shifts) mois[mp]=p.shifts; });
+    }
+    _hxe={dem:dem, docs:qd.data||[], verif:hxeVerifier(dem,qd.data||[],mois), charge:new Date()};
+    renderExchHistorique();
+  }catch(e){
+    box.innerHTML='<div style="color:var(--err);padding:20px;">Erreur de lecture de l\'historique : '+repEsc(e.message||e)+'</div>';
+  }
+}
+function _hxeNom(id){
+  if(id==null) return '';
+  var d=((_hxe&&_hxe.docs)||[]).find(function(x){ return x.id==id; });
+  return d?((d.firstname||'')+' '+(d.lastname||'')).trim():'n° '+id;
+}
+function _hxeNomLocal(lid){
+  if(lid==null) return 'personne';
+  var d=((_hxe&&_hxe.docs)||[]).find(function(x){ return (x.local_id!=null?x.local_id:x.id)==lid; });
+  return d?((d.firstname||'')+' '+(d.lastname||'')).trim():'n° '+lid;
+}
+function _hxeJ(dk){ return dk?String(dk).slice(8,10)+'/'+String(dk).slice(5,7)+'/'+String(dk).slice(2,4):''; }
+function _hxeT(ts){
+  if(!ts) return '—';
+  var d=new Date(ts); if(isNaN(d)) return '—';
+  var z=function(n){ return ('0'+n).slice(-2); };
+  return z(d.getDate())+'/'+z(d.getMonth()+1)+'/'+String(d.getFullYear()).slice(2)+' '+z(d.getHours())+':'+z(d.getMinutes());
+}
+function _hxePostes(){ var a=[].slice.call(arguments); return a.filter(Boolean).map(function(p){ return String(p).split(',').map(function(x){ return _exPn(x.trim()); }).join(' + '); }).join(' + '); }
+function _hxeLireFiltres(){
+  var v=function(id){ var e=document.getElementById(id); return e&&typeof e.value==='string'?e.value:''; };
+  var anom=document.getElementById('hxe-anom');
+  _hxeF={medecin:v('hxe-med'),du:v('hxe-du'),au:v('hxe-au'),champDate:v('hxe-champ')||'poste',type:v('hxe-type'),
+    statuts:[].slice.call(document.querySelectorAll('.hxe-st')).filter(function(c){ return c.checked; }).map(function(c){ return c.dataset.st; }),
+    anomalies:!!(anom&&anom.checked===true)};
+}
+function hxeFiltresChanges(){ _hxeLireFiltres(); _hxeRenderTable(); }
+function hxeFiltresRaz(){ _hxeF={medecin:'',du:'',au:'',champDate:'poste',statuts:[],type:'',anomalies:false}; renderExchHistorique(); }
+function renderExchHistorique(){
+  var box=document.getElementById('exch-mgr-content');
+  if(!box||!_hxe) return;
+  var F=_hxeF, sel=function(a,b){ return a===b?' selected':''; };
+  var ids={}; _hxe.dem.forEach(function(r){ [r.proposer_id,r.acceptor_id,r.target_doctor_id].forEach(function(x){ if(x!=null) ids[x]=1; }); });
+  var meds=Object.keys(ids).map(function(id){ return {id:id,nom:_hxeNom(id)}; }).sort(function(a,b){ return a.nom.localeCompare(b.nom,'fr'); });
+  var nKo=Object.keys(_hxe.verif).filter(function(k){ return _hxe.verif[k].etat==='ko'; }).length;
+  var champ='font-size:12px;padding:4px 6px;border:1px solid var(--line2);border-radius:6px;background:var(--bg1);color:var(--t1);';
+  var h='<div style="display:flex;flex-wrap:wrap;align-items:flex-end;gap:10px;margin-bottom:10px;">'
+    +'<label style="font-size:11px;color:var(--t3);">Médecin<br><select id="hxe-med" onchange="hxeFiltresChanges()" style="'+champ+'min-width:170px;"><option value="">Tous</option>'
+    +meds.map(function(m){ return '<option value="'+repEsc(m.id)+'"'+sel(String(m.id),String(F.medecin))+'>'+repEsc(m.nom)+'</option>'; }).join('')+'</select></label>'
+    +'<label style="font-size:11px;color:var(--t3);">Période sur<br><select id="hxe-champ" onchange="hxeFiltresChanges()" style="'+champ+'"><option value="poste"'+sel('poste',F.champDate)+'>la date du poste</option><option value="creation"'+sel('creation',F.champDate)+'>la date de la demande</option></select></label>'
+    +'<label style="font-size:11px;color:var(--t3);">Du<br><input type="date" id="hxe-du" value="'+repEsc(F.du)+'" onchange="hxeFiltresChanges()" style="'+champ+'"></label>'
+    +'<label style="font-size:11px;color:var(--t3);">Au<br><input type="date" id="hxe-au" value="'+repEsc(F.au)+'" onchange="hxeFiltresChanges()" style="'+champ+'"></label>'
+    +'<label style="font-size:11px;color:var(--t3);">Type<br><select id="hxe-type" onchange="hxeFiltresChanges()" style="'+champ+'"><option value="">Tous</option>'
+    +['exchange','reprise','swap','donation'].map(function(t){ return '<option value="'+t+'"'+sel(t,F.type)+'>'+HXE_TYPES[t]+'</option>'; }).join('')
+    +'<option value="switch"'+sel('switch',F.type)+'>Avec switch (J0 ou J+1)</option></select></label>'
+    +'<button onclick="hxeFiltresRaz()" style="background:none;border:1px solid var(--line2);color:var(--t3);border-radius:6px;padding:5px 10px;font-size:11px;cursor:pointer;">Réinitialiser</button>'
+    +'</div>'
+    +'<div style="display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;margin-bottom:12px;font-size:12px;color:var(--t2);">'
+    +'<span style="font-size:11px;color:var(--t3);">Statut :</span>'
+    +Object.keys(HXE_STATUTS).map(function(s){ return '<label style="white-space:nowrap;cursor:pointer;"><input type="checkbox" class="hxe-st" data-st="'+s+'"'+(F.statuts.indexOf(s)>=0?' checked':'')+' onchange="hxeFiltresChanges()"> '+HXE_STATUTS[s]+'</label>'; }).join('')
+    +'<label style="white-space:nowrap;cursor:pointer;margin-left:8px;color:'+(nKo?'var(--err)':'var(--t2)')+';font-weight:600;"><input type="checkbox" id="hxe-anom"'+(F.anomalies?' checked':'')+' onchange="hxeFiltresChanges()"> Seulement les échanges absents du planning ('+nKo+')</label>'
+    +'</div>'
+    +'<div id="hxe-table"></div>';
+  box.innerHTML=h;
+  _hxeRenderTable();
+}
+function _hxeRenderTable(){
+  var box=document.getElementById('hxe-table');
+  if(!box||!_hxe) return;
+  var V=_hxe.verif, liste=hxeFiltrer(_hxe.dem,_hxeF,V);
+  var td='padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top;';
+  var th='padding:7px 8px;text-align:left;font-size:10px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--t3);border-bottom:1px solid var(--line2);position:sticky;top:0;background:var(--bg1);';
+  var COUL={ok:'var(--ok)',ko:'var(--err)',remplace:'var(--t2)',non_publie:'var(--t3)',inconnu:'var(--t3)',confirmed:'var(--ok)',cancelled:'var(--t3)',archived:'var(--t3)',open:'var(--warn)',accepted:'var(--accent)',pending_j1:'#ea580c',pending_switch:'#ea580c',held:'var(--t2)'};
+  var t='<div style="font-size:12px;color:var(--t3);margin-bottom:6px;">'+liste.length+' demande'+(liste.length>1?'s':'')+' affichée'+(liste.length>1?'s':'')+' sur '+_hxe.dem.length
+    +' · planning publié lu le '+_hxeT(_hxe.charge)+'</div>';
+  if(!liste.length){ box.innerHTML=t+'<div style="color:var(--t3);padding:30px;text-align:center;">Aucune demande ne correspond aux filtres.</div>'; return; }
+  t+='<div style="overflow-x:auto;"><table style="width:100%;border-collapse:collapse;font-size:12px;"><thead><tr>'
+    +['Demande le','Demandeur','Autre médecin','Date(s) et poste(s)','Type','Statut','Acceptée le','Confirmée le','Note du gestionnaire','Dans le planning ?'].map(function(x){ return '<th style="'+th+'">'+x+'</th>'; }).join('')
+    +'</tr></thead><tbody>';
+  liste.forEach(function(r){
+    var autre, role;
+    if(r.acceptor_id!=null){ autre=_hxeNom(r.acceptor_id); role=r.type==='reprise'?'titulaire, cède le poste':'accepte'; }
+    else if(r.target_doctor_id!=null){ autre=_hxeNom(r.target_doctor_id); role=r.type==='reprise'?'titulaire':'ciblé, sans réponse'; }
+    else if(r.target_doctor_ids&&r.target_doctor_ids.length){ autre=r.target_doctor_ids.length+' médecins'; role='proposé à plusieurs, sans réponse'; }
+    else { autre='—'; role='ouverte à tous'; }
+    var quoi=_hxeJ(r.proposer_date)+' · '+repEsc(_hxePostes(r.proposer_post,r.type==='donation'?null:r.proposer_post2));
+    if(r.type==='swap'&&r.counter_date) quoi+='<br><span style="color:var(--t3);">⇄ en retour</span> '+_hxeJ(r.counter_date)+' · '+repEsc(_hxePostes(r.counter_post,r.counter_post2));
+    if(r.switch_proposer_post) quoi+='<br><span style="color:var(--t3);">switch J0 :</span> '+repEsc(_hxePostes(r.switch_proposer_post));
+    if(r.j1_date) quoi+='<br><span style="color:var(--t3);">J+1</span> '+_hxeJ(r.j1_date)+' · '+repEsc(_hxePostes(r.j1_proposer_post))+(r.j1_acceptor_posts&&r.j1_acceptor_posts.length?' ⇄ '+repEsc(_hxePostes(r.j1_acceptor_posts.join(','))):'');
+    var notes=[r.reviewer_note,r.cancel_reason].filter(function(x,i,a){ return x&&String(x).trim()&&a.indexOf(x)===i; }).join(' — ');
+    var v=V[r.id], pl='<span style="color:var(--t3);">—</span>';
+    if(v){
+      var E=HXE_ETATS[v.etat]||HXE_ETATS.inconnu;
+      var det=v.cases.map(function(c){
+        var base=_hxeJ(c.dk)+' '+_exPn(c.pid)+' : ';
+        if(c.etat==='ok') return base+_hxeNomLocal(c.attendu)+' ✓'+(c.ailleurs?' (sur '+_exPn(c.ailleurs)+', poste interchangeable)':'');
+        if(c.etat==='ko') return base+_hxeNomLocal(c.actuel)+' au lieu de '+_hxeNomLocal(c.attendu);
+        if(c.etat==='remplace') return base+'repris par un échange plus récent';
+        if(c.etat==='non_publie') return base+'mois non publié';
+        return base+'médecin introuvable';
+      });
+      pl='<span title="'+repEsc(E[1]+'\n'+det.join('\n'))+'" style="font-weight:700;color:'+COUL[v.etat]+';white-space:nowrap;">'+E[0]+' '+E[1]+'</span>';
+      if(v.etat==='ko') pl+='<div style="font-size:11px;color:var(--err);margin-top:2px;">'+det.filter(function(x,i){ return v.cases[i].etat==='ko'; }).map(repEsc).join('<br>')+'</div>';
+    }
+    t+='<tr data-hxe="'+repEsc(r.id)+'"'+(v&&v.etat==='ko'?' style="background:rgba(239,68,68,.06);"':'')+'>'
+      +'<td style="'+td+'white-space:nowrap;">'+_hxeT(r.created_at)+'</td>'
+      +'<td style="'+td+'font-weight:600;">'+repEsc(_hxeNom(r.proposer_id))+'</td>'
+      +'<td style="'+td+'">'+repEsc(autre)+'<div style="font-size:10.5px;color:var(--t3);">'+repEsc(role)+'</div></td>'
+      +'<td style="'+td+'">'+quoi+'</td>'
+      +'<td style="'+td+'white-space:nowrap;">'+repEsc(hxeTypeLabel(r))+'</td>'
+      +'<td style="'+td+'white-space:nowrap;font-weight:600;color:'+(COUL[r.status]||'var(--t2)')+';">'+repEsc(HXE_STATUTS[r.status]||r.status)+(r.status==='archived'&&r.confirmed_at?'<div style="font-size:10.5px;font-weight:400;color:var(--t3);">après confirmation</div>':'')+'</td>'
+      +'<td style="'+td+'white-space:nowrap;">'+_hxeT(r.accepted_at)+'</td>'
+      +'<td style="'+td+'white-space:nowrap;">'+_hxeT(r.confirmed_at)+'</td>'
+      +'<td style="'+td+'max-width:260px;color:var(--t2);">'+(notes?repEsc(notes):'<span style="color:var(--t3);">—</span>')+'</td>'
+      +'<td style="'+td+'">'+pl+'</td>'
+      +'</tr>';
+  });
+  t+='</tbody></table></div>';
+  box.innerHTML=t;
 }
 
 // [2026-11-05] Demandes groupées par jour et par poste concerné (la demande d'origine, ses propositions, les reprises du même poste).
